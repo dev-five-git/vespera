@@ -9,6 +9,7 @@ use vespera_core::openapi::Server;
 use vespera_core::schema::{OAuthFlows, SecurityRequirement, SecurityScheme, SecuritySchemeType};
 
 use super::info::{InfoArgs, is_info_field, validate_info};
+use super::input_env::{arg_or_env, doc_url_or_env, env_lit};
 use super::security_dsl::{parse_flows, parse_security_values, validate_top_level_scopes};
 
 /// Server configuration for `OpenAPI`
@@ -173,9 +174,9 @@ impl Parse for AutoRouterInput {
             }
         }
 
-        let (docs_url, docs_label) = doc_url_or_env(docs_url, "docs_url", "VESPERA_DOCS_URL");
-        let (redoc_url, redoc_label) = doc_url_or_env(redoc_url, "redoc_url", "VESPERA_REDOC_URL");
-        let (spec_url, spec_label) = doc_url_or_env(spec_url, "spec_url", "VESPERA_SPEC_URL");
+        let (docs_url, docs_label) = doc_url_or_env(docs_url, "docs_url", "VESPERA_DOCS_URL")?;
+        let (redoc_url, redoc_label) = doc_url_or_env(redoc_url, "redoc_url", "VESPERA_REDOC_URL")?;
+        let (spec_url, spec_label) = doc_url_or_env(spec_url, "spec_url", "VESPERA_SPEC_URL")?;
         validate_doc_urls(&[
             (docs_label.as_str(), docs_url.as_ref()),
             (redoc_label.as_str(), redoc_url.as_ref()),
@@ -191,7 +192,7 @@ impl Parse for AutoRouterInput {
         };
 
         let dir_from_env = dir.is_none();
-        let dir = dir.or_else(|| env_lit("VESPERA_DIR"));
+        let dir = arg_or_env(dir, "VESPERA_DIR")?;
         if let Some(dir) = &dir {
             super::validate_route_dir(&dir.value(), "vespera!", dir.span()).map_err(|err| {
                 if dir_from_env {
@@ -205,9 +206,12 @@ impl Parse for AutoRouterInput {
         Ok(Self {
             literal_hash,
             dir,
-            openapi: openapi.or_else(|| env_lit("VESPERA_OPENAPI").map(|f| vec![f])),
-            title: title.or_else(|| env_lit("VESPERA_TITLE")),
-            version: version.or_else(|| env_lit("VESPERA_VERSION")).or_else(|| {
+            openapi: match openapi {
+                Some(files) => Some(files),
+                None => env_lit("VESPERA_OPENAPI")?.map(|f| vec![f]),
+            },
+            title: arg_or_env(title, "VESPERA_TITLE")?,
+            version: arg_or_env(version, "VESPERA_VERSION")?.or_else(|| {
                 crate::env_access::var("CARGO_PKG_VERSION")
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
@@ -232,37 +236,13 @@ impl Parse for AutoRouterInput {
 /// server, validated like a `servers = ...` argument: an invalid value is a
 /// compile error naming the variable, never silently dropped.
 fn env_server() -> syn::Result<Option<Vec<ServerConfig>>> {
-    let Some(url) = env_lit("VESPERA_SERVER_URL") else {
+    let Some(url) = env_lit("VESPERA_SERVER_URL")? else {
         return Ok(None);
     };
     let url = validate_server_url(&url)
         .map_err(|err| crate::env_access::env_error(&err, "VESPERA_SERVER_URL"))?;
-    let description = crate::env_access::non_empty_var("VESPERA_SERVER_DESCRIPTION");
+    let description = crate::env_access::non_empty_var("VESPERA_SERVER_DESCRIPTION")?;
     Ok(Some(vec![ServerConfig { url, description }]))
-}
-
-/// The `VESPERA_*` variable `key` as a string literal, when set and not empty.
-fn env_lit(key: &str) -> Option<LitStr> {
-    crate::env_access::non_empty_var(key).map(|value| LitStr::new(&value, Span::call_site()))
-}
-
-/// A documentation URL argument, else its env-var fallback, with the label
-/// errors name it by: the argument, or the variable it was read from (the
-/// error points at the whole macro call, so the argument name alone sent
-/// readers looking for an argument they never wrote). An empty variable (a
-/// `VESPERA_DOCS_URL=` export) counts as unset, so it cannot fail the build
-/// with "must start with `/`".
-fn doc_url_or_env(arg: Option<LitStr>, key: &str, var: &str) -> (Option<LitStr>, String) {
-    arg.map_or_else(
-        || {
-            let lit = env_lit(var);
-            (
-                lit,
-                format!("`{key}` (from the `{var}` environment variable)"),
-            )
-        },
-        |lit| (Some(lit), format!("`{key}`")),
-    )
 }
 
 /// Reject `docs_url` / `redoc_url` / `spec_url` values axum would panic on at

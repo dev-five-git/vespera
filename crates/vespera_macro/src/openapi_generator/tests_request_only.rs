@@ -86,6 +86,29 @@ fn request_only_type_keeps_its_name() {
     );
 }
 
+/// An `Option` field of a request-only type is optional on input: serde reads
+/// a missing `Option` key as `None`, so `note` is not in `required`.
+#[test]
+fn request_only_option_field_is_not_required() {
+    let doc = doc_for(
+        &[(
+            "CreateItem",
+            "pub struct CreateItem { pub name: String, pub note: Option<String> }",
+        )],
+        &[(
+            "/items",
+            "create",
+            "async fn create(Json(i): Json<CreateItem>) -> String",
+        )],
+    );
+    assert_eq!(component_names(&doc), ["CreateItem"]);
+    assert_eq!(*request_ref(&doc, "/items"), schema_ref("CreateItem"));
+    assert_eq!(
+        doc["components"]["schemas"]["CreateItem"]["required"],
+        json!(["name"])
+    );
+}
+
 /// A type only returned keeps its single response view (`x` required).
 #[test]
 fn response_only_type_is_unchanged() {

@@ -58,7 +58,7 @@ multipart = [
     "tokio/io-util",
     "tokio/rt",
 ]
-cron = ["tokio/rt", "tokio/time", "tokio/sync", "vespera_core/cron-chrono", "vespera_macro/cron"]
+cron = ["tokio/rt", "tokio/sync", "vespera_core/cron-chrono", "vespera_macro/cron"]
 # `#[vespera::cron("...", tz = "Asia/Seoul")]`: evaluate a job in an IANA time
 # zone instead of UTC (the default). Pulls in chrono-tz and its embedded tz
 # database (~7 MB of generated source, compiled for the proc-macro too), so it

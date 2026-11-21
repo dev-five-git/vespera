@@ -48,9 +48,21 @@ pub fn var(key: &str) -> Result<String, VarError> {
 
 /// The value of an optional setting read by [`var`], where a set-but-empty
 /// variable (`VESPERA_DIR=`) counts as unset, as the README documents for
-/// every `VESPERA_*` fallback.
-pub fn non_empty_var(key: &str) -> Option<String> {
-    var(key).ok().filter(|value| !value.is_empty())
+/// every `VESPERA_*` fallback. A value that is set but not Unicode is an
+/// error naming the variable, like any other malformed `VESPERA_*` setting:
+/// it is never silently ignored.
+pub fn non_empty_var(key: &str) -> syn::Result<Option<String>> {
+    match var(key) {
+        Ok(value) => Ok(Some(value).filter(|value| !value.is_empty())),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => Err(env_error(
+            &syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "the value is not valid Unicode",
+            ),
+            key,
+        )),
+    }
 }
 
 /// `err`, naming the environment variable its value was read from: the error
@@ -355,5 +367,23 @@ mod tests {
     fn non_unicode_value_is_reported_like_std() {
         let _guard = set_var(KEY, non_unicode());
         assert_eq!(var(KEY), Err(VarError::NotUnicode(non_unicode())));
+    }
+
+    #[test]
+    fn non_empty_var_names_a_non_unicode_variable() {
+        let _guard = set_var(KEY, non_unicode());
+        let error = non_empty_var(KEY).expect_err("a non-Unicode value is an error");
+        assert!(error.to_string().contains(KEY), "{error}");
+        assert!(error.to_string().contains("not valid Unicode"), "{error}");
+    }
+
+    #[test]
+    fn non_empty_var_treats_absent_and_empty_as_unset() {
+        let _absent = remove_var(KEY);
+        assert_eq!(non_empty_var(KEY).unwrap(), None);
+        let _empty = set_var(KEY, "");
+        assert_eq!(non_empty_var(KEY).unwrap(), None);
+        let _set = set_var(KEY, "value");
+        assert_eq!(non_empty_var(KEY).unwrap().as_deref(), Some("value"));
     }
 }

@@ -255,7 +255,7 @@ pub fn namespace_export_schemas(
     for (new_name, schema) in moved {
         schemas.insert(new_name.clone(), schema);
     }
-    rewrite_schema_refs(&mut value, &renames);
+    rewrite_document_refs(&mut value, &renames);
     *openapi = serde_json::to_string(&value)
         .and_then(|text| serde_json::from_str(&text))
         .map_err(|error| {
@@ -274,7 +274,7 @@ const DATA_KEYS: [&str; 5] = ["example", "examples", "default", "enum", "const"]
 /// Keys whose object maps names (property names, component names, status
 /// codes, paths) to schemas or objects: its own keys are never data keywords,
 /// so a property named `example` or a `default` response is still walked.
-const NAME_MAP_KEYS: [&str; 14] = [
+const NAME_MAP_KEYS: [&str; 15] = [
     "properties",
     "patternProperties",
     "$defs",
@@ -291,6 +291,9 @@ const NAME_MAP_KEYS: [&str; 14] = [
     "callbacks",
     "links",
     "pathItems",
+    // The root `webhooks` map (OpenAPI 3.1) is keyed by webhook name, so a
+    // webhook named `default` / `example` is a name, not data.
+    "webhooks",
 ];
 
 /// Point every `#/components/schemas/{old}` `$ref` in a schema position inside
@@ -298,6 +301,14 @@ const NAME_MAP_KEYS: [&str; 14] = [
 /// component map; example / default / enum data is left as written.
 pub fn rewrite_schema_refs(value: &mut serde_json::Value, renames: &BTreeMap<String, String>) {
     rewrite_refs(value, renames, true);
+}
+
+/// [`rewrite_schema_refs`] for a whole OpenAPI document. Its root is an
+/// object of keywords, so `webhooks` (a name map, see [`NAME_MAP_KEYS`]) is
+/// reached as a name map here; a bare component map passed to
+/// [`rewrite_schema_refs`] has names as its own keys instead.
+fn rewrite_document_refs(document: &mut serde_json::Value, renames: &BTreeMap<String, String>) {
+    rewrite_refs(document, renames, false);
 }
 
 /// [`rewrite_schema_refs`]; `names` says `value` is a name map (its keys are
@@ -828,6 +839,28 @@ mod tests {
                 ["application/json"]["schema"]["$ref"],
             media,
             "{value:#}"
+        );
+    }
+
+    /// A root `webhooks` entry named like a data keyword (`default`) is a
+    /// webhook name: its schema `$ref` follows the namespace like a path's.
+    #[test]
+    fn root_webhook_names_are_namespaced() {
+        let (metadata, mut openapi) = schema_doc("/items", "struct Item { id: i32 }");
+        openapi.webhooks = serde_json::from_value(serde_json::json!({
+            "default": { "post": { "requestBody": { "content": { "application/json": {
+                "schema": { "$ref": "#/components/schemas/Item" }
+            } } } } }
+        }))
+        .unwrap();
+
+        namespace_export_schemas(&mut openapi, &metadata, "Media").unwrap();
+
+        let webhooks = serde_json::to_value(&openapi.webhooks).unwrap();
+        assert_eq!(
+            webhooks["default"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/MediaItem",
+            "{webhooks:#}"
         );
     }
 

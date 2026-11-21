@@ -12,7 +12,9 @@
 //! declaring `#[path = "helpers/x.rs"] mod x;`) is the module `routes::admin::x`,
 //! whatever its own directory is. Only top-level `mod` declarations count.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use super::module_scope::{cfg_predicates, sibling_rs_file};
@@ -66,17 +68,65 @@ impl ModuleTable {
         self.resolve(segments).1
     }
 
-    /// The call-path names and the predicates of the route file `segments`.
-    fn resolve(&self, segments: &[String]) -> (Vec<String>, Vec<String>) {
-        // The longest leading run of `segments` some declaration loads: the file
-        // itself, or the module above it. The rest keep their own names and
-        // carry no predicates.
-        let found = (1..=segments.len()).rev().find_map(|depth| {
+    /// The two call paths (`a::b`) of the route file `segments` when its
+    /// cfg-disjoint declarations name it differently: `#[cfg(unix)]
+    /// #[path = "users_impl.rs"] mod users;` beside `#[cfg(not(unix))] mod
+    /// users_impl;` loads one file under two names, and no single call path is
+    /// right on both platforms.
+    pub(super) fn name_conflict(&self, segments: &[String]) -> Option<(String, String)> {
+        let (_, chains) = self.loaded_chains(segments)?;
+        let call_path = |chain: &[Step]| {
+            chain
+                .iter()
+                .map(|step| step.name.as_str())
+                .collect::<Vec<_>>()
+                .join("::")
+        };
+        let first = call_path(chains.first()?);
+        let other = chains
+            .iter()
+            .map(|chain| call_path(chain))
+            .find(|path| *path != first)?;
+        Some((first, other))
+    }
+
+    /// A hash of the whole table: the route-cache key covers it, so an edit to
+    /// a declaration outside the folder (a `#[path]` declarer under `src/`)
+    /// that changes a route file's module chain or predicates invalidates the
+    /// cached router, even though no fingerprinted file changed.
+    pub(super) fn digest(&self) -> u64 {
+        let mut entries: Vec<(&Vec<String>, &Vec<Vec<Step>>)> = self.by_segments.iter().collect();
+        entries.sort_unstable_by(|left, right| left.0.cmp(right.0));
+        let mut hasher = DefaultHasher::new();
+        for (segments, chains) in entries {
+            segments.hash(&mut hasher);
+            chains.len().hash(&mut hasher);
+            for chain in chains {
+                chain.len().hash(&mut hasher);
+                for step in chain {
+                    step.name.hash(&mut hasher);
+                    step.cfgs.hash(&mut hasher);
+                }
+            }
+        }
+        hasher.finish()
+    }
+
+    /// The longest leading run of `segments` some declaration loads (the file
+    /// itself, or the module above it) with the chains loading it.
+    fn loaded_chains(&self, segments: &[String]) -> Option<(usize, &Vec<Vec<Step>>)> {
+        (1..=segments.len()).rev().find_map(|depth| {
             self.by_segments
                 .get(&segments[..depth])
                 .map(|chains| (depth, chains))
-        });
-        let Some((depth, chains)) = found else {
+        })
+    }
+
+    /// The call-path names and the predicates of the route file `segments`.
+    fn resolve(&self, segments: &[String]) -> (Vec<String>, Vec<String>) {
+        // The rest of `segments` past the loaded run keep their own names and
+        // carry no predicates.
+        let Some((depth, chains)) = self.loaded_chains(segments) else {
             return (segments.to_vec(), Vec::new());
         };
         let mut names: Vec<String> = chains[0].iter().map(|step| step.name.clone()).collect();
@@ -560,6 +610,82 @@ mod tests {
         let segments = segs(&["helpers", "x"]);
         assert_eq!(table.declared_segments(&segments), ["admin", "x"]);
         assert_eq!(table.cfg_predicates(&segments), ["unix"]);
+    }
+
+    /// A declarer outside the folder (`routes.rs` loads `shared/api.rs`, which
+    /// gates `routes::admin`) decides the route file's predicates: the digest
+    /// changes with it, so a cached router built without the gate is not
+    /// reused (round-36 MR1-L1).
+    #[test]
+    fn digest_follows_a_declarer_outside_the_folder() {
+        let tree_with = |cfg: &str| {
+            let api = format!("{cfg} #[path = \"../routes/admin.rs\"] pub mod admin;");
+            tree(&[
+                ("routes.rs", "#[path = \"shared/api.rs\"] mod api;"),
+                ("shared/api.rs", api.as_str()),
+                ("routes/admin.rs", ""),
+            ])
+        };
+        let digest =
+            |dir: &tempfile::TempDir| ModuleTable::new(&dir.path().join("routes")).digest();
+        let plain = tree_with("");
+        let gated = tree_with("#[cfg(feature = \"admin\")]");
+        assert_ne!(digest(&plain), digest(&gated));
+        assert_eq!(
+            digest(&gated),
+            digest(&tree_with("#[cfg(feature = \"admin\")]"))
+        );
+    }
+
+    /// Cfg-disjoint declarations that name one route file differently have no
+    /// single call path; the same name under both predicates has one
+    /// (round-36 MR1-L2).
+    #[test]
+    fn twins_naming_one_file_differently_conflict() {
+        let dir = tree(&[
+            (
+                "routes/mod.rs",
+                "#[cfg(unix)] #[path = \"users_impl.rs\"] pub mod users;\n#[cfg(not(unix))] pub mod users_impl;",
+            ),
+            ("routes/users_impl.rs", ""),
+        ]);
+        let table = ModuleTable::new(&dir.path().join("routes"));
+        assert_eq!(
+            table.name_conflict(&segs(&["users_impl"])),
+            Some(("users".to_string(), "users_impl".to_string()))
+        );
+        assert_eq!(table.name_conflict(&segs(&["nope"])), None);
+        let same = tree(&[(
+            "routes/mod.rs",
+            "#[cfg(unix)] pub mod admin;\n#[cfg(not(unix))] pub mod admin;",
+        )]);
+        let table = ModuleTable::new(&same.path().join("routes"));
+        assert_eq!(table.name_conflict(&segs(&["admin"])), None);
+    }
+
+    /// The collector refuses such a folder with an error naming both paths,
+    /// instead of routing one platform to a module that does not exist.
+    #[test]
+    fn twin_names_for_a_route_file_are_a_compile_error() {
+        let dir = tree(&[
+            (
+                "routes/mod.rs",
+                "#[cfg(unix)] #[path = \"users_impl.rs\"] pub mod users;\n#[cfg(not(unix))] pub mod users_impl;",
+            ),
+            (
+                "routes/users_impl.rs",
+                "#[route(get)] pub async fn list() {}\n",
+            ),
+        ]);
+        let Err(error) =
+            crate::collector::collect_metadata(&dir.path().join("routes"), "routes", &[])
+        else {
+            panic!("twin declarations naming one file differently must be rejected");
+        };
+        assert!(
+            error.to_string().contains("`users` and `users_impl`"),
+            "{error}"
+        );
     }
 
     #[test]

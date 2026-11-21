@@ -25,8 +25,8 @@
 //! function is followed too: its job is registered under the predicates that
 //! gate it (all of them, nested gates included; see [`CronMetadata::cfg`]),
 //! and one that is statically false (`#[cfg(any())]`) is never compiled, so
-//! it is dropped. A cheap text pre-filter
-//! (the name `cron` anywhere under `src/`) keeps the common case — no cron jobs at
+//! it is dropped. A cheap text pre-filter (the name `cron` or a `#[path`
+//! declaration anywhere under `src/`) keeps the common case — no cron jobs at
 //! all — free of any parsing.
 
 use std::collections::{HashMap, HashSet};
@@ -58,7 +58,8 @@ pub(super) fn discover_cron_jobs(
 ) -> Result<Vec<CronMetadata>, String> {
     let mut canonical_paths = HashMap::new();
     // Most projects declare no `#[vespera::cron]` jobs: without stored jobs
-    // or a `cron` attribute anywhere under `src/` (or, for a call site
+    // or a scan marker (a `cron` name or a `#[path]` declaration) anywhere
+    // under `src/` (or, for a call site
     // outside `src/`, anywhere in the call site's directory, where its
     // module tree lives — see `outside_src_tree`), nothing is parsed.
     let tree = src_dir

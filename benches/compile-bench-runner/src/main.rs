@@ -163,16 +163,8 @@ fn is_target_triple_dir(path: &std::path::Path) -> bool {
 }
 
 /// [`CacheDir`] of the measured build: `VESPERA_TARGET_DIR` when set, else
-/// cargo's `target_directory`.  `None` (with a warning) when neither is
-/// known.
-fn vespera_build_dir() -> Option<CacheDir> {
-    let dir = locate_vespera_build_dir();
-    if dir.is_none() {
-        eprintln!("[warn] target directory unknown: vespera's route cache is not cleared");
-    }
-    dir
-}
-
+/// cargo's `target_directory`.  `None` when neither is known: the caller must
+/// stop, since a surviving route cache would make every run a cache hit.
 fn locate_vespera_build_dir() -> Option<CacheDir> {
     let metadata = || {
         let out = cargo()
@@ -234,7 +226,7 @@ fn cache_cleared(dir: &std::path::Path, result: std::io::Result<()>) -> bool {
     }
 }
 
-fn measure_once(target: &str, pass: &str, vespera_dir: Option<&CacheDir>) -> Option<f64> {
+fn measure_once(target: &str, pass: &str, vespera_dir: &CacheDir) -> Option<f64> {
     // Force a full re-expansion of the fixture lib (deps stay built). A failed
     // clean leaves the fixture's expansion cached: no valid sample.
     let cleaned = cargo()
@@ -251,7 +243,7 @@ fn measure_once(target: &str, pass: &str, vespera_dir: Option<&CacheDir>) -> Opt
     // Every directory is attempted (no short circuit): one surviving cache
     // drops the run.
     let mut caches_gone = true;
-    for dir in vespera_dir.map_or_else(Vec::new, CacheDir::dirs) {
+    for dir in vespera_dir.dirs() {
         let result = fs::remove_dir_all(&dir);
         caches_gone &= cache_cleared(&dir, result);
     }
@@ -284,6 +276,12 @@ fn measure_once(target: &str, pass: &str, vespera_dir: Option<&CacheDir>) -> Opt
         ));
     }
     extract_pass_time(&stderr, pass)
+}
+
+/// The summary header: the `clean` runs kept out of the `runs` attempted (a
+/// run dropped by a failed clean or cache step still counts as attempted).
+fn summary_header(pass: &str, target: &str, clean: usize, runs: usize) -> String {
+    format!("== {pass} on `{target}` ({clean} clean / {runs} total runs) ==")
 }
 
 /// The timings a comparison can use: finite and positive, sorted with
@@ -328,25 +326,27 @@ fn baselines_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("baselines")
 }
 
-fn main() {
-    let args = parse_args();
-
-    eprintln!("[warm] building `{}` (and deps) once...", args.target);
+/// Builds the measured target once so the measured runs are incremental.
+fn warm_build(target: &str) {
+    eprintln!("[warm] building `{target}` (and deps) once...");
     let warm = cargo()
-        .args(["build", "--quiet", "-p", &args.target, "--lib"])
+        .args(["build", "--quiet", "-p", target, "--lib"])
         .status();
     if !matches!(warm, Ok(s) if s.success()) {
-        fatal(&format!("warm build of `{}` failed", args.target));
+        fatal(&format!("warm build of `{target}` failed"));
     }
+}
 
-    let vespera_dir = vespera_build_dir();
+/// The usable timings of `args.runs` measured runs. A run that lacks the pass
+/// or fails its clean or cache step is reported and dropped.
+fn collect_samples(args: &Args, vespera_dir: &CacheDir) -> Vec<f64> {
     eprintln!(
         "[measure] {} runs of `{}` on `{}`",
         args.runs, args.pass, args.target
     );
     let mut samples = Vec::new();
     for i in 0..args.runs {
-        match measure_once(&args.target, &args.pass, vespera_dir.as_ref()) {
+        match measure_once(&args.target, &args.pass, vespera_dir) {
             Some(t) => {
                 eprintln!("  run {:>2}: {t:.4}s", i + 1);
                 samples.push(t);
@@ -360,20 +360,90 @@ fn main() {
     }
     let samples = usable_timings(samples);
     if samples.is_empty() {
-        fatal("no samples collected (is the target a lib that uses vespera macros?)");
+        fatal(
+            "no samples collected: every run lacked the pass, or failed its clean or route-cache step (is the target a lib that uses vespera macros?)",
+        );
     }
+    samples
+}
 
-    let med0 = median(&samples);
+/// The samples within 3x of their median (an outlier run does not skew the
+/// summary); every sample when none is within.
+fn clean_samples(samples: &[f64]) -> Vec<f64> {
+    let med0 = median(samples);
     let clean: Vec<f64> = samples
         .iter()
         .copied()
         .filter(|&t| t <= med0 * 3.0)
         .collect();
-    let clean = if clean.is_empty() {
-        samples.clone()
+    if clean.is_empty() {
+        samples.to_vec()
     } else {
         clean
+    }
+}
+
+/// Writes the clean timings to the baseline `name`.
+fn save_baseline(name: &str, clean: &[f64]) {
+    let dir = baselines_dir();
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join(format!("{name}.txt"));
+    let body = clean.iter().fold(String::new(), |mut body, t| {
+        let _ = writeln!(body, "{t}");
+        body
+    });
+    match fs::write(&path, body) {
+        Ok(()) => println!("   saved baseline `{name}` -> {}", path.display()),
+        Err(e) => eprintln!("   failed to save baseline `{name}`: {e}"),
+    }
+}
+
+/// Compares the measured `min` / `med` with the baseline `name`.
+fn compare_baseline(name: &str, min: f64, med: f64, rel_sd: f64) {
+    let path = baselines_dir().join(format!("{name}.txt"));
+    let s = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("   baseline `{name}` not found ({e}); use --save-baseline first");
+            return;
+        }
     };
+    let base = usable_timings(s.lines().filter_map(|l| l.trim().parse().ok()));
+    if base.is_empty() {
+        eprintln!("   baseline `{name}` has no usable timings");
+        return;
+    }
+    let bmin = base[0];
+    let bmed = median(&base);
+    let d_min = 100.0 * (min - bmin) / bmin;
+    let d_med = 100.0 * (med - bmed) / bmed;
+    // Noise-aware verdict on `min` (the robust estimator):
+    // require the change to exceed run-to-run noise (>= 2%).
+    let noise = rel_sd.max(2.0);
+    let verdict = if d_min.abs() <= noise {
+        "NO CHANGE (within noise)"
+    } else if d_min < 0.0 {
+        "IMPROVED"
+    } else {
+        "REGRESSED"
+    };
+    println!();
+    println!("== vs baseline `{name}` ==");
+    println!("   min:    {bmin:.4}s -> {min:.4}s  ({d_min:+.1}%)");
+    println!("   median: {bmed:.4}s -> {med:.4}s  ({d_med:+.1}%)");
+    println!("   verdict: {verdict}  (noise ~{noise:.1}%)");
+}
+
+fn main() {
+    let args = parse_args();
+    warm_build(&args.target);
+    let Some(vespera_dir) = locate_vespera_build_dir() else {
+        fatal(
+            "target directory unknown: vespera's route cache cannot be cleared, so every run would be a cache hit (set VESPERA_TARGET_DIR)",
+        );
+    };
+    let samples = collect_samples(&args, &vespera_dir);
+    let clean = clean_samples(&samples);
 
     let min = clean[0];
     let med = median(&clean);
@@ -383,59 +453,16 @@ fn main() {
 
     println!();
     println!(
-        "== {} on `{}` ({} clean / {} total runs) ==",
-        args.pass,
-        args.target,
-        clean.len(),
-        samples.len()
+        "{}",
+        summary_header(&args.pass, &args.target, clean.len(), args.runs)
     );
     println!("   min={min:.4}s  median={med:.4}s  mean={mn:.4}s  sd={sd:.4}s ({rel_sd:.1}%)");
 
     if let Some(name) = &args.save_baseline {
-        let dir = baselines_dir();
-        let _ = fs::create_dir_all(&dir);
-        let path = dir.join(format!("{name}.txt"));
-        let body = clean.iter().fold(String::new(), |mut body, t| {
-            let _ = writeln!(body, "{t}");
-            body
-        });
-        match fs::write(&path, body) {
-            Ok(()) => println!("   saved baseline `{name}` -> {}", path.display()),
-            Err(e) => eprintln!("   failed to save baseline `{name}`: {e}"),
-        }
+        save_baseline(name, &clean);
     }
-
     if let Some(name) = &args.baseline {
-        let path = baselines_dir().join(format!("{name}.txt"));
-        match fs::read_to_string(&path) {
-            Ok(s) => {
-                let base = usable_timings(s.lines().filter_map(|l| l.trim().parse().ok()));
-                if base.is_empty() {
-                    eprintln!("   baseline `{name}` has no usable timings");
-                } else {
-                    let bmin = base[0];
-                    let bmed = median(&base);
-                    let d_min = 100.0 * (min - bmin) / bmin;
-                    let d_med = 100.0 * (med - bmed) / bmed;
-                    // Noise-aware verdict on `min` (the robust estimator):
-                    // require the change to exceed run-to-run noise (>= 2%).
-                    let noise = rel_sd.max(2.0);
-                    let verdict = if d_min.abs() <= noise {
-                        "NO CHANGE (within noise)"
-                    } else if d_min < 0.0 {
-                        "IMPROVED"
-                    } else {
-                        "REGRESSED"
-                    };
-                    println!();
-                    println!("== vs baseline `{name}` ==");
-                    println!("   min:    {bmin:.4}s -> {min:.4}s  ({d_min:+.1}%)");
-                    println!("   median: {bmed:.4}s -> {med:.4}s  ({d_med:+.1}%)");
-                    println!("   verdict: {verdict}  (noise ~{noise:.1}%)");
-                }
-            }
-            Err(e) => eprintln!("   baseline `{name}` not found ({e}); use --save-baseline first"),
-        }
+        compare_baseline(name, min, med, rel_sd);
     }
 }
 
@@ -525,6 +552,16 @@ mod tests {
             dir,
             Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
         ));
+    }
+
+    /// Dropped runs stay in the attempted count: 5 kept of 8 attempted, not
+    /// "5 of 5" (round-36 MR0-L2).
+    #[test]
+    fn summary_header_counts_every_attempted_run() {
+        assert_eq!(
+            summary_header("macro_expand_crate", "fixture", 5, 8),
+            "== macro_expand_crate on `fixture` (5 clean / 8 total runs) =="
+        );
     }
 
     /// A NaN or infinite timing (a malformed line) is dropped rather than

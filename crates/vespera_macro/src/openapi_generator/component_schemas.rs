@@ -20,10 +20,10 @@ use crate::{
 /// [`request_view`]). A view can only differ through a `serde` attribute,
 /// a `#[form_data(default)]`, a one-sided `Serialize_repr` /
 /// `Deserialize_repr` derive, a `HashSet` / `BTreeSet` / `Duration` /
-/// `Decimal` type (`request_view::type_view_differs`) or an externally
-/// tagged enum mixing unit and data variants (`{"Unit": null}` is also
-/// read), so definitions mentioning none of them (and no `enum`) are not
-/// even parsed.
+/// `Decimal` type (`request_view::type_view_differs`), an `Option` field
+/// (written as `null`, but optional on input) or an externally tagged enum
+/// mixing unit and data variants (`{"Unit": null}` is also read), so
+/// definitions mentioning none of them (and no `enum`) are not even parsed.
 pub(super) fn input_names(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<&str>,
@@ -43,6 +43,7 @@ pub(super) fn input_names(
             "Duration",
             "Decimal",
             "enum",
+            "Option",
         ]
         .iter()
         .any(|needle| s.definition.contains(needle))
