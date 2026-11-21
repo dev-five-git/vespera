@@ -53,11 +53,12 @@ vespera/
 │       └── src/streaming_closures.rs  # Streaming closure factories + JMethodID cache
 ├── libs/
 │   └── vespera-bridge/       # Java library (com.devfive.vespera.bridge)
-│       ├── VesperaBridge.java          # Public bridge facade + dispatch helpers
-│       ├── VesperaNativeLoader.java    # Native library extraction/loading
-│       ├── WireHeaderStringSupport.java # Wire-header JSON/string helpers
-│       ├── RequestShape.java           # Request body/idempotency classifier
-│       └── VesperaProxyController.java # Auto-configured Spring proxy
+│       └── src/main/java/com/devfive/vespera/bridge/
+│           ├── VesperaBridge.java          # Public bridge facade + dispatch helpers
+│           ├── VesperaNativeLoader.java    # Native library extraction/loading
+│           ├── WireHeaderStringSupport.java # Wire-header JSON/string helpers
+│           ├── RequestShape.java           # Request body/idempotency classifier
+│           └── VesperaProxyController.java # Auto-configured Spring proxy
 ├── examples/
 │   ├── axum-example/         # Standard axum server demo
 │   ├── testkit/              # Tiny in-process test client (tower oneshot) for the examples' integration tests
@@ -190,7 +191,7 @@ vespera_jni (JNI glue — thin layer)
   └── tokio (rt-multi-thread — for LazyLock<Runtime>)
 
 rust-jni-demo (example — depends on vespera (features jni, ffi) plus serde, serde_json, futures-util, tokio; no axum / vespera_jni / vespera_inprocess)
-  └── vespera = { features = ["jni"] }
+  └── vespera = { features = ["jni", "ffi"] }
 ```
 
 ## USER-FACING API
@@ -263,7 +264,7 @@ bytes 4+N..   : raw body bytes (UTF-8 text or binary —
 - No base64 — multipart uploads / PDFs / images travel as raw bytes.
 - Request `query` (no leading `?`) is appended to `path`: with `?` when `path` has no query of its own, with `&` when it does (`/items?page=2` + `limit=10` → `/items?page=2&limit=10`), with nothing when `path` ends in `?` / `&`. The Java bridge embeds the query in `path`; both forms (and both at once) are valid (`crates/vespera_inprocess/tests/query_join.rs`).
 - `"v":1` is the protocol version; mismatched versions get a `400` wire response.
-- The non-panic failure modes (malformed wire, no app registered, over-cap request, timeout, …) return a valid length-prefixed wire response, so the Java decoder never has to special-case errors. A handler panic becomes a `500` wire with `"panicked":"true"` only on the JNI and C ABI entry points (`vespera_jni` / `ffi`, which catch the unwind). The Rust `dispatch_*` and `dispatch_*streaming*` functions do not catch it (`streaming.rs:490`, `dispatch.rs:414`): it unwinds to the caller, which must catch it itself.
+- The non-panic failure modes (malformed wire, no app registered, over-cap request, timeout, …) return a valid length-prefixed wire response, so the Java decoder never has to special-case errors. A handler panic becomes a `500` wire with `"panicked":"true"` only on the JNI and C ABI entry points (`vespera_jni` / `ffi`, which catch the unwind). The Rust `dispatch_*` and `dispatch_*streaming*` functions do not catch it (`streaming.rs:492`, `dispatch.rs:417`): it unwinds to the caller, which must catch it itself.
 - `validation_errors` is an optional array hoisted from 422 JSON bodies (`{"errors":[...]}`) — original body preserved verbatim alongside.
 - Optional request fields `remote_addr` (`ip:port`) and `scheme` (`http`/`https`) become the `ConnectInfo<SocketAddr>` and `http::uri::Scheme` request extensions (unparseable values are ignored; the URI stays origin-form). The Java proxy fills them from the servlet request.
 - Optional request field `principal` (`null` | `{"name", "authorities"?: [string], "attributes"?: {string:string}}`) is the **trusted side channel** for the authenticated caller: only the host writes it (Java: `PrincipalResolver` bean, default `ServletPrincipalResolver` = `getUserPrincipal()` + Spring Security authorities read reflectively; `vespera.bridge.forward-principal=false` disables), never from client headers. Dispatch inserts it as the `vespera_inprocess::Principal` request extension (also `RequestEnvelope::principal` on the text API); the `Principal` extractor rejects `401` when absent (`Option<Principal>` / `Extension<Principal>` also work). Parsed by `wire/header_read/principal.rs` (child module extending `Parser`; serde twin `bench_serde::de_opt_principal`), `authorities` / `attributes` capped at `MAX_PRINCIPAL_ENTRIES` = 1024 each (`400`); the Java encoder (`VesperaWireCodec.writePrincipal`) forwards at most `VesperaPrincipal.MAX_ENTRIES` (= 1024, mirrors the Rust constant) of each and logs a one-time `System.Logger` WARNING when it truncates, so an over-privileged user is not answered `400` on every request.
@@ -352,7 +353,7 @@ omitted, or empty / whitespace-only after ASCII trimming → `"_default"` app; t
 `APP_ROUTERS: ArcSwap<HashMap<String, Router>>` — resolution is
 lock-free (one atomic load + hash lookup) — and returns:
 
-- 404 wire response if the name is registered but no such app exists
+- 404 wire response if the (valid, trimmed) name is not registered
 - 400 wire response if the (trimmed, non-empty) name fails validation (≤ 64 bytes, `[A-Za-z0-9_-]`)
 - Otherwise the matching `Router` is cloned (Arc-backed) and dispatched
 
