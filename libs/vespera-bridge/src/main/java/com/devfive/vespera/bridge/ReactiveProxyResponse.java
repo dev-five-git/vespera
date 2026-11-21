@@ -8,8 +8,8 @@ import reactor.core.publisher.Mono;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -169,7 +169,7 @@ final class ReactiveProxyResponse {
         HttpHeaders copy = new HttpHeaders();
         headers.forEach((name, values) -> {
             if (skip == null || !skip.contains(name.toLowerCase(Locale.ROOT))) {
-                copy.addAll(name, List.copyOf(values));
+                copy.addAll(name, new ArrayList<>(values));
             }
         });
         return copy;

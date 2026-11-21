@@ -308,6 +308,27 @@ class ReactiveStreamAbortTest {
     }
 
     @Test
+    void aNullHeaderValueSurvivesTheSnapshotAndTheDiscardOfAStreamedRustHeader() {
+        MockServerHttpResponse response = new MockServerHttpResponse();
+        response.getHeaders().add("X-Null", null);
+        ReactiveProxyResponse out = new ReactiveProxyResponse(response, null, null, CorsHandling.RUST);
+
+        // The snapshot copies every header: a null value must not throw.
+        out.applyWireHeader(RUST_HEADER, 4, RUST_HEADER.length - 4, true);
+        assertTrue(out.headerApplied());
+
+        out.discardRustOutput();
+        assertFalse(out.headerApplied());
+        boolean[] restored = {false};
+        response.getHeaders().forEach((name, values) -> {
+            if ("X-Null".equals(name)) {
+                restored[0] = values.size() == 1 && values.get(0) == null;
+            }
+        });
+        assertTrue(restored[0], "the null-valued header is restored");
+    }
+
+    @Test
     void discardWithoutASnapshotDropsTheRustHeadersByName() {
         MockServerHttpResponse response = new MockServerHttpResponse();
         response.getHeaders().set("X-Frame-Options", "DENY");
