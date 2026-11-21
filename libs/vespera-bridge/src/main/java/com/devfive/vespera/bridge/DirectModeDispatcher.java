@@ -140,11 +140,12 @@ final class DirectModeDispatcher {
                 return;
             }
             // Retry disabled: re-running could return a different response,
-            // so surface the size to the operator instead of double-executing.
-            ProxyErrors.write(response, 500, "vespera DIRECT overflow: response needs "
-                    + overflow.requiredSize()
+            // so fail instead of double-executing. The throw reaches the
+            // controller's failure path: the client gets the generic 500 body,
+            // and the size and mode hint ride along as the cause of the WARN.
+            throw new VesperaBridge.BufferTooSmallException(overflow.requiredSize(),
+                    "vespera DIRECT overflow: response needs " + overflow.requiredSize()
                     + " bytes; route this request via BIDIRECTIONAL_STREAMING");
-            return;
         }
 
         // Commit status + headers parsed straight from the direct buffer —

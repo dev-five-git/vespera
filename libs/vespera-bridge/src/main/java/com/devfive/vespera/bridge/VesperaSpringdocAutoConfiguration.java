@@ -21,10 +21,12 @@ import org.springframework.context.annotation.ImportRuntimeHints;
 
 /**
  * springdoc-openapi integration: the Rust routes show up in the application's
- * Swagger UI.  Active only when springdoc ({@code springdoc-openapi-starter-
- * webmvc-api} / {@code -ui}, an optional dependency of the bridge) is on the
- * classpath, its api-docs are enabled and
- * {@code vespera.bridge.springdoc.enabled} is not {@code false}.
+ * Swagger UI.  This configuration is active only when springdoc
+ * ({@code springdoc-openapi-starter-webmvc-api} / {@code -ui}, an optional
+ * dependency of the bridge) is on the classpath and its api-docs are enabled.
+ * The springdoc features (the document source and the group / merge modes)
+ * additionally require {@code vespera.bridge.springdoc.enabled} not to be
+ * {@code false}.
  *
  * <p>The Rust app must serve its document ({@code vespera!(spec_url =
  * "/openapi.json", ...)}); it is fetched in-process by the

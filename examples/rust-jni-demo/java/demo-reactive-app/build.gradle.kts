@@ -34,7 +34,22 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }
 
+// Same forwarding as demo-app: tuning knobs passed as `./gradlew -D...` reach
+// the forked test JVM (the two builds are separate, so the list is repeated).
+val forwardedSystemProperties = listOf(
+    "vespera.bench",
+    "vespera.streaming.chunkBytes",
+    "vespera.streaming.channelCapacity",
+    "vespera.runtime.workerThreads",
+    "vespera.direct.maxRetainedBytes",
+    "vespera.direct.maxBufferBytes",
+    "vespera.native.dir",
+)
+
 tasks.test {
     useJUnitPlatform()
+    forwardedSystemProperties.forEach { key ->
+        System.getProperty(key)?.let { systemProperty(key, it) }
+    }
     testLogging.showStandardStreams = true
 }

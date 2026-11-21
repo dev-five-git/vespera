@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Errors the proxy itself produces (oversized buffered bodies, unknown
- * apps, native failures, DIRECT overflow, async backpressure) are written in
+ * apps, native failures, async backpressure) are written in
  * the same shape as the Rust {@code error_wire}: the status plus a
  * {@code text/plain; charset=utf-8} body holding the message — never routed
  * through Spring's {@code /error} page, whose JSON / whitelabel shape depends

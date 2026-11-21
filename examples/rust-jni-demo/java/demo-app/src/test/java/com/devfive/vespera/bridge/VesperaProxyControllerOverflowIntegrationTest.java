@@ -6,12 +6,14 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
@@ -76,14 +78,22 @@ class VesperaProxyControllerOverflowIntegrationTest {
         VesperaProxyController controller = controller(retry);
         String key = key();
         String path = "/diag/blob/" + key + "/16";
+        // The controller records DIRECT before the dispatch; only the rejection
+        // path overwrites it with STREAMING. The heap fallback leaves it DIRECT.
+        ProxyExchange exchange = new ProxyExchange(
+                LoggerFactory.getLogger(VesperaProxyControllerOverflowIntegrationTest.class),
+                List.of(), "GET", null);
+        exchange.mode = DispatchMode.DIRECT;
 
         MockHttpServletResponse response = new MockHttpServletResponse();
         controller.dispatchDirectMode(
-                response, null, "GET", path, "", sink -> {}, VesperaWireCodec.EMPTY_BODY, Boolean.TRUE, null);
+                response, null, "GET", path, "", sink -> {}, VesperaWireCodec.EMPTY_BODY, Boolean.TRUE, exchange);
 
         assertEquals(200, response.getStatus());
         assertEquals("x".repeat(16), response.getContentAsString(StandardCharsets.UTF_8));
         assertEquals(1, runs(key), "streamed once, not dispatched twice");
+        assertEquals(DispatchMode.STREAMING, exchange.mode,
+                "the rejection path served the request; a heap fallback would leave DIRECT");
         assertFalse(controller.avoidsDirect(null, "GET", path, ""), "not an overflow");
     }
 

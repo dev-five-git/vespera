@@ -113,7 +113,7 @@ class ReactiveProxyE2ETest {
     }
 
     @Test
-    void proxiesBufferedRequestsThroughDispatchAsync() throws Exception {
+    void proxiesBufferedRequestsToRust() throws Exception {
         // A concrete non-streaming Accept: a bodyless GET without one would
         // take the header-first (implicit streaming) path instead.
         HttpResponse<String> health = get("/health", "Accept", "application/json");
