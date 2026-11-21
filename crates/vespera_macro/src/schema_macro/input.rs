@@ -65,10 +65,13 @@ impl Parse for SchemaInput {
                     let _ = bracketed!(content in input);
                     let fields: Punctuated<LitStr, Token![,]> = content
                         .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
+                    // SM1-M1 (round 38): `r#type` is stored as `type`, the
+                    // name the struct's fields are compared by (as `rename`,
+                    // `partial` and `relation_adapters` store theirs).
                     for lit in &fields {
-                        spans.record("omit", lit);
+                        spans.record_source("omit", lit);
                     }
-                    omit = Some(fields.into_iter().map(|s| s.value()).collect());
+                    omit = Some(fields.iter().map(source_field_name).collect());
                 }
                 "pick" => {
                     if pick.is_some() {
@@ -89,9 +92,9 @@ impl Parse for SchemaInput {
                         return Err(empty_pick_error(ident.span()));
                     }
                     for lit in &fields {
-                        spans.record("pick", lit);
+                        spans.record_source("pick", lit);
                     }
-                    pick = Some(fields.into_iter().map(|s| s.value()).collect());
+                    pick = Some(fields.iter().map(source_field_name).collect());
                 }
                 _ => {
                     return Err(syn::Error::new(

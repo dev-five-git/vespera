@@ -748,9 +748,11 @@ fn sea_orm_prelude_value_is_not_serde_json_value() {
     let module = ["crate", "sea"].map(String::from);
     let value: syn::Type = syn::parse_quote!(Value);
     let json: syn::Type = syn::parse_quote!(Json);
-    assert_ne!(
+    // SM4-M1 (round 38): the glob's path, not the bare primitive-list name
+    // (which a call site without the glob does not resolve) nor serde_json's.
+    assert_eq!(
         resolve_type_to_absolute_path(&value, &module).to_string(),
-        "vespera :: serde_json :: Value"
+        "sea_orm :: prelude :: Value"
     );
     assert_eq!(
         resolve_type_to_absolute_path(&json, &module).to_string(),
