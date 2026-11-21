@@ -178,8 +178,10 @@ pub fn resolve_filter_names(
 
 /// Returns `true` when `name` is a legal Rust identifier, i.e. the field
 /// identifier `module_scope::segment_ident` emits for a `rename` / `add`
-/// target is exactly `name`, so the collision and keyword guards check the
-/// text that is emitted.
+/// target names the same field as `name`, so the collision and keyword guards
+/// check the text that is emitted. A name reserved only in a later edition
+/// (`gen`) is emitted as its raw identifier (`r#gen`): the same field, not the
+/// same spelling (R36-SM5-L1).
 ///
 /// `syn::parse_str::<Ident>` rejects non-identifiers (`"user-id"`,
 /// `"a b"`, `""`, a leading digit) AND reserved keywords (`"type"`,
@@ -250,9 +252,10 @@ pub fn validate_rename_fields(
 
 /// Validates that every `add = [(name: Type)]` field name is a legal Rust
 /// identifier (see [`is_valid_field_ident`]): the field
-/// `module_scope::segment_ident` materializes for it is then exactly `name`,
-/// so a non-identifier / keyword name is refused here like an invalid
-/// `rename` target.
+/// `module_scope::segment_ident` materializes for it is the same field as
+/// `name` (an edition-reserved name is emitted raw, `r#gen`), so a
+/// non-identifier / keyword name is refused here like an invalid `rename`
+/// target.
 pub fn validate_add_field_idents(
     add: Option<&Vec<(String, syn::Type)>>,
     at: &impl ErrorAt,
@@ -318,11 +321,22 @@ pub fn validate_unique_field_names(
         }
     }
     let mut written_before: Vec<&String> = Vec::new();
+    let mut added: HashSet<String> = HashSet::new();
     for (written, _) in add.into_iter().flatten() {
         let name = unraw(written);
         // The repeated `add` entry, not the first one (L9, round 16).
         let nth = written_before.iter().filter(|w| **w == written).count();
         written_before.push(written);
+        // A name listed twice in `add` is not a collision with a source field
+        // (R36-SM-6-L1): it is reported as the repeat it is.
+        if !added.insert(name.clone()) {
+            return Err(at.error_at_occurrence(
+                "add",
+                written,
+                nth,
+                format!("`add` lists field `{name}` more than once: keep one entry"),
+            ));
+        }
         if !seen.insert(name.clone()) {
             return Err(at.error_at_occurrence(
                 "add",
@@ -878,6 +892,8 @@ mod tests {
     // used to be rejected as a duplicate.
     #[case::renamed_cfg_twins(&[("key", "id"), ("key", "id")], &[("id", "key")], &[], None)]
     #[case::distinct(&[("id", "id"), ("label", "name")], &[("name", "label")], &["extra"], None)]
+    // R36-SM-6-L1: a name listed twice in `add` is the repeat, not a collision.
+    #[case::add_twice(&[("id", "id")], &[], &["extra", "extra"], Some("`add` lists field `extra` more than once"))]
     fn unique_field_names(
         #[case] kept: &[(&str, &str)],
         #[case] renames: &[(&str, &str)],

@@ -15,8 +15,11 @@ use crate::schema_macro::cfg_eval::{Predicate, statically_active, statically_fal
 use crate::schema_macro::transformation::serde_key;
 
 /// The serde keys a wrapper honours from a container: the conversions and the
-/// container default (`same_file_override::dto_serde`).
-const CONVERSION_SERDE_KEYS: &[&str] = &["from", "try_from", "into", "default"];
+/// container default (`same_file_override::dto_serde`). `into` is not one: the
+/// wrapper drops it (its proxy has no `Into` impl to repeat), and the
+/// component it `$ref`s does not depend on it, so an undecided `into` is no
+/// reason to refuse the adapter (R36-SM3-L1).
+const CONVERSION_SERDE_KEYS: &[&str] = &["from", "try_from", "default"];
 
 /// The component name the wrapper's `$ref` names: the DTO's `#[schema(name =
 /// ..)]` override when it has one (a `cfg_attr` one only when its predicate is
@@ -93,7 +96,7 @@ pub(super) fn reject_undecided_cfg_attr(
     Err(syn::Error::new_spanned(
         adapter_name,
         format!(
-            "schema_type!: relation field `{field_name}` explicitly requested adapter `{adapter_name}`, whose `cfg_attr` sets a schema name or a serde conversion (`from` / `try_from` / `into` / `default`) under a predicate that is neither known true nor known false; use a statically known predicate or move the item out of the `cfg_attr`"
+            "schema_type!: relation field `{field_name}` explicitly requested adapter `{adapter_name}`, whose `cfg_attr` sets a schema name or a serde conversion (`from` / `try_from` / `default`) under a predicate that is neither known true nor known false; use a statically known predicate or move the item out of the `cfg_attr`"
         ),
     ))
 }
@@ -273,9 +276,10 @@ mod tests {
         "#[cfg_attr(unix, serde(try_from = \"String\"))] struct Dto { id: i32 }",
         true
     )]
-    #[case::undecided_into(
+    // R36-SM3-L1: `into` is dropped by the wrapper, so it is not judged.
+    #[case::undecided_into_is_not_judged(
         "#[cfg_attr(unix, serde(into = \"String\"))] struct Dto { id: i32 }",
-        true
+        false
     )]
     #[case::undecided_default(
         "#[cfg_attr(unix, serde(default = \"make\"))] struct Dto { id: i32 }",

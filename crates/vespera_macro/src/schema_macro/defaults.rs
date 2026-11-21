@@ -284,11 +284,13 @@ pub(super) fn default_alias_is_external(type_path: &syn::TypePath, module: &[Str
     if !ECOSYSTEM_DEFAULT_NAMES.contains(&name.as_str()) {
         return true;
     }
+    // `vespera` re-exports chrono (`vespera::chrono`), so that root counts too.
     let external = |path: &[String]| {
         matches!(
             path.first().map(String::as_str),
             Some("chrono" | "uuid" | "sea_orm" | "rust_decimal")
-        )
+        ) || (path.first().map(String::as_str) == Some("vespera")
+            && path.get(1).map(String::as_str) == Some("chrono"))
     };
     match crate::schema_macro::module_scope::resolve_name(&segments, module) {
         crate::schema_macro::module_scope::Resolved::Path(path) => external(&path),

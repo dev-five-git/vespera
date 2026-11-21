@@ -66,34 +66,10 @@ fn line_of(identity: &str) -> usize {
 /// the file's top level, or when the file cannot be parsed. The file is parsed
 /// under the fallback (R35-SM-M1): inside rustc the compiler's spans would
 /// place every brace on the call-site line, so the chain would be wrong.
+/// Served by the module scope's per-content line index (SM0-L1): the file is
+/// parsed once per content, not once per `#[derive(Schema)]`.
 fn module_chain(file: &Path, line: usize) -> Vec<String> {
-    get_file_content(file)
-        .and_then(|content| {
-            with_fallback_parse(&content, |parsed| enclosing_modules(&parsed.items, line))
-        })
-        .unwrap_or_default()
-}
-
-/// The inline modules whose braces span `line` (as the openapi generator's
-/// `nested` finds them).
-fn enclosing_modules(items: &[syn::Item], line: usize) -> Vec<String> {
-    items
-        .iter()
-        .find_map(|item| match item {
-            syn::Item::Mod(syn::ItemMod {
-                ident,
-                content: Some((brace, inner)),
-                ..
-            }) if (brace.span.open().start().line..=brace.span.close().end().line)
-                .contains(&line) =>
-            {
-                let mut chain = vec![syn::ext::IdentExt::unraw(ident).to_string()];
-                chain.extend(enclosing_modules(inner, line));
-                Some(chain)
-            }
-            _ => None,
-        })
-        .unwrap_or_default()
+    crate::schema_macro::module_scope::inline_chain_at(file, line)
 }
 
 /// The [`FINGERPRINTS`] key of the item `ident` in module `chain` of `file`.
@@ -209,6 +185,32 @@ pub struct Top {}
         assert_eq!(
             module_chain(&dir.path().join("missing.rs"), 2),
             Vec::<String>::new()
+        );
+    }
+
+    /// SM0-L1 (round 36): every `#[derive(Schema)]` of a file asks for its
+    /// module chain, and the file is parsed (under the fallback) once for all
+    /// of them, not once per derive.
+    #[test]
+    fn module_chain_parses_a_file_once_for_all_its_derives() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("pages.rs");
+        std::fs::write(
+            &file,
+            "pub mod first {
+    pub struct Page {}
+}
+pub struct Top {}
+",
+        )
+        .unwrap();
+        let before = crate::schema_macro::file_cache::derived_computes();
+        assert_eq!(module_chain(&file, 2), ["first"]);
+        assert_eq!(module_chain(&file, 2), ["first"]);
+        assert_eq!(module_chain(&file, 4), Vec::<String>::new());
+        assert_eq!(
+            crate::schema_macro::file_cache::derived_computes() - before,
+            1
         );
     }
 

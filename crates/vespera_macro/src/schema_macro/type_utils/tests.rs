@@ -750,6 +750,43 @@ fn chrono_names_resolve_bare_only(#[case] src: &str, #[case] expected: &str) {
 /// re-rooted like the element type (`[u8; HASH_LEN]` was copied as written:
 /// E0425 at the call site); literals, const generic parameters, unknown and
 /// `::`-rooted names stay as written.
+/// R36-SM4-L2: a qualified-self path re-roots its self type and its trait
+/// path; the associated segments stay as written, and a path without a trait
+/// (`<T>::X`) re-roots only its self type.
+#[rstest]
+#[case::self_type_and_trait(
+    "<Id as Keyed>::Out",
+    "< crate :: keys :: Id as crate :: keys :: Keyed > :: Out"
+)]
+#[case::primitive_self_type("<i32 as Keyed>::Out", "< i32 as crate :: keys :: Keyed > :: Out")]
+#[case::no_trait("<Id>::Out", "< crate :: keys :: Id > :: Out")]
+fn qself_path_is_rerooted(#[case] ty: &str, #[case] expected: &str) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("models")).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod models; pub mod keys;").unwrap();
+    std::fs::write(
+        src.join("keys.rs"),
+        "pub trait Keyed { type Out; }
+pub struct Id;",
+    )
+    .unwrap();
+    std::fs::write(src.join("models.rs"), "pub mod file;").unwrap();
+    std::fs::write(
+        src.join("models").join("file.rs"),
+        "use crate::keys::{Id, Keyed};",
+    )
+    .unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let ty: syn::Type = syn::parse_str(ty).unwrap();
+    let module = ["crate", "models", "file"].map(String::from);
+    assert_eq!(
+        resolve_type_with_params(&ty, &module, &[]).to_string(),
+        expected
+    );
+}
+
 #[rstest]
 #[case::local_const("[u8; HASH_LEN]", &[], "[u8 ; crate :: models :: file :: HASH_LEN]")]
 #[case::imported_const("[u8; SHARED_LEN]", &[], "[u8 ; crate :: consts :: SHARED_LEN]")]

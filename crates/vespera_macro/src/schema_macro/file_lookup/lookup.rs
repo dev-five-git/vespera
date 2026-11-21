@@ -346,7 +346,7 @@ fn find_bare_struct_in_file(
     }
     // A top-level `use crate::models::user::Model;` names the struct, as an
     // inline module's import does (it was `BareNotFound` at the top level).
-    if let Some(found) = imported_struct(struct_name, &module_path) {
+    if let Some(found) = imported_struct(struct_name, &module_path)? {
         return Ok(found);
     }
     let nested = crate::schema_macro::file_cache::get_parsed_file(file_path).and_then(|file| {
@@ -372,47 +372,69 @@ fn find_bare_struct_in_inline_module(
     module: &[String],
 ) -> Result<(StructMetadata, Vec<String>), LookupError> {
     use crate::schema_macro::module_scope::{module_items, struct_in_items};
-    let found = |module: Vec<String>| {
-        let definition = struct_in_items(&module_items(&module)?, struct_name)?;
-        Some((
-            StructMetadata::new_model(struct_name.to_string(), definition),
-            module,
-        ))
-    };
-    found(module.to_vec())
-        .or_else(|| imported_struct(struct_name, module))
-        .ok_or_else(|| LookupError::BareNotFound {
+    let own = module_items(module)
+        .and_then(|items| struct_in_items(&items, struct_name))
+        .map(|definition| {
+            (
+                StructMetadata::new_model(struct_name.to_string(), definition),
+                module.to_vec(),
+            )
+        });
+    match own {
+        Some(found) => Ok(found),
+        None => imported_struct(struct_name, module)?.ok_or_else(|| LookupError::BareNotFound {
             struct_name: struct_name.to_string(),
-        })
+        }),
+    }
 }
 
 /// The struct a bare `struct_name` imports into `module` (`use
 /// super::Model;`, a renaming `use super::Model as User;`), following `pub
 /// use` re-export chains (`use crate::models::User;` where `models` has
-/// `pub use user::User;`).
-fn imported_struct(struct_name: &str, module: &[String]) -> Option<(StructMetadata, Vec<String>)> {
+/// `pub use user::User;`). `None` when the import names nothing this crate
+/// can read.
+///
+/// # Errors
+///
+/// [`LookupError::ExternalCrate`]: the name is imported from another crate
+/// (`use entity::user::Model;`). It used to read as "not found", so a
+/// same-named local `#[derive(Schema)]` was taken for it (R36-SM2-01).
+fn imported_struct(
+    struct_name: &str,
+    module: &[String],
+) -> Result<Option<(StructMetadata, Vec<String>)>, LookupError> {
     use crate::schema_macro::module_scope::{
         Resolved, module_items, resolve_name, struct_in_items,
     };
     let Resolved::Path(mut path) = resolve_name(&[struct_name.to_string()], module) else {
-        return None;
+        return Ok(None);
     };
-    if path.len() < 2 || path[0] != "crate" {
-        return None;
+    if path.first().is_some_and(|root| root != "crate") {
+        path.pop();
+        return Err(LookupError::ExternalCrate {
+            path: path.join("::"),
+        });
     }
-    let defined = path.pop()?;
-    let (path, definition) =
-        if let Some(definition) = struct_in_items(&module_items(&path)?, &defined) {
-            (path, definition)
-        } else {
-            let (defined_in, name) = reexported_item(&path, &defined)?;
-            let definition = struct_in_items(&module_items(&defined_in)?, &name)?;
-            (defined_in, definition)
-        };
-    Some((
-        StructMetadata::new_model(struct_name.to_string(), definition),
-        path,
-    ))
+    // A single segment names no module item: the last segment is the item
+    // and the rest its module, which must be non-empty.
+    let defined = path.pop().filter(|_| !path.is_empty());
+    let found = defined.and_then(|defined| {
+        module_items(&path)
+            .and_then(|items| struct_in_items(&items, &defined))
+            .map(|definition| (path.clone(), definition))
+            .or_else(|| {
+                reexported_item(&path, &defined).and_then(|(defined_in, name)| {
+                    let definition = struct_in_items(&module_items(&defined_in)?, &name)?;
+                    Some((defined_in, definition))
+                })
+            })
+    });
+    Ok(found.map(|(path, definition)| {
+        (
+            StructMetadata::new_model(struct_name.to_string(), definition),
+            path,
+        )
+    }))
 }
 
 /// Classifies one already-typed directory entry, keeping the recursive collector's

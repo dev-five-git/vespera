@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use super::super::file_lookup::{
     LookupError, call_site_definition, call_site_module, find_struct_from_path_detailed,
-    reexported_module, requested_module_path, storage_module_path,
+    reexported_item, reexported_module, requested_module_path, storage_module_path,
 };
 use super::super::input::SchemaTypeInput;
 use super::super::module_scope::{Resolved, module_scope, resolve_name};
@@ -87,7 +87,9 @@ fn resolve_found<'a>(
             // A qualified path with an entry of unknown module (outside `src/`)
             // is no proof of the requested item: the file lookup decides.
             (Some(_), None) => false,
-            (None, _) => true,
+            // A bare name imported from another crate is not the stored item
+            // of this crate, whatever module the entry was derived in (R36-SM2-01).
+            (None, _) => !imported_from_another_crate(source_type_name),
         };
     match storage_hit {
         Some(found) if storage_trusted => {
@@ -136,6 +138,18 @@ fn lookup_failure_falls_back(err: &LookupError) -> bool {
     )
 }
 
+/// Whether the call site imports the bare `name` from another crate
+/// (`use entity::user::Model;`): a stored `#[derive(Schema)]` of that name
+/// is then not the imported struct (R36-SM2-01).
+fn imported_from_another_crate(name: &str) -> bool {
+    call_site_module().is_some_and(|module| {
+        matches!(
+            resolve_name(&[name.to_string()], &module),
+            Resolved::Path(path) if path.first().is_some_and(|root| root != "crate")
+        )
+    })
+}
+
 /// A bare source name must be in scope at the call site (R24-SM2-F1): the
 /// generated `impl From<Name>` and the other uses of the source type name it
 /// as written. A struct of another module that the call site does not import
@@ -154,7 +168,24 @@ fn ensure_bare_name_in_scope(
         return Ok(());
     }
     match resolve_name(&[name.to_string()], call_site) {
-        Resolved::Path(_) => Ok(()),
+        // The import must name the module the stored entry is defined in
+        // (through a `pub use` re-export too), not just any module (R36-SM2-01).
+        Resolved::Path(mut path) => {
+            path.pop();
+            let module = reexported_item(&path, name).map_or(path, |(defined_in, _)| defined_in);
+            if module == defined_in {
+                return Ok(());
+            }
+            Err(syn::Error::new_spanned(
+                source_type,
+                format!(
+                    "schema_type!: `{name}` is imported from `{}`, not from `{}`, which defines it; name it with its full path (`{}::{name}`) or import it",
+                    module.join("::"),
+                    defined_in.join("::"),
+                    defined_in.join("::")
+                ),
+            ))
+        }
         Resolved::Unknown => {
             let path = defined_in.join("::");
             Err(syn::Error::new_spanned(
@@ -228,6 +259,13 @@ mod tests {
         false
     )]
     #[case::same_module("pub struct Model;", &["crate"], &["crate"], false)]
+    #[case::imported_from_another_module(
+        "pub mod user { pub mod entity { pub struct Model; } }
+use crate::other::Model;",
+        &["crate", "user", "entity"],
+        &["crate"],
+        true
+    )]
     #[case::unlocated_call_site(
         "pub mod user { pub mod entity { pub struct Model; } }",
         &["crate", "user", "entity"],
@@ -253,6 +291,45 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    /// R36-SM2-01: a bare name the call site imports from another crate
+    /// (`use entity::user::Model;`) is refused, not the same-named
+    /// `#[derive(Schema)]` of this crate stored under the same name.
+    #[test]
+    fn bare_extern_import_is_not_replaced_by_a_same_named_entry() {
+        let dir = crate_with(&[
+            (
+                "src/lib.rs",
+                "pub mod models;
+pub mod routes;",
+            ),
+            ("src/models.rs", "pub mod memo;"),
+            (
+                "src/models/memo.rs",
+                "pub struct Model { pub id: i32, pub title: String }",
+            ),
+            ("src/routes.rs", "use entity::user::Model;"),
+        ]);
+        let _env = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+        let memo = dir.path().join("src/models/memo.rs");
+        let stored = StructMetadata {
+            source_identity: Some(format!("{}::Model@1:1", memo.display())),
+            ..StructMetadata::new(
+                "Model".to_string(),
+                "pub struct Model { pub id: i32, pub title: String }".to_string(),
+            )
+        };
+        let storage = HashMap::from([("Model".to_string(), stored)]);
+        let _call_site =
+            crate::schema_macro::file_lookup::set_test_call_site_module("crate::routes");
+        bump_epoch();
+        let input: SchemaTypeInput = syn::parse_str("UserDto from Model").unwrap();
+        let result = resolve_source(&input, "Model", &storage);
+        assert!(
+            result.is_err(),
+            "the extern import must not resolve to the local entry"
+        );
     }
 
     #[test]

@@ -265,6 +265,11 @@ impl TypeResolver<'_> {
             Type::Path(type_path) if type_path.qself.is_none() => {
                 self.path(&type_path.path).unwrap_or_else(|| quote! { #ty })
             }
+            Type::Path(syn::TypePath {
+                qself: Some(qself),
+                path,
+                ..
+            }) => self.qself_path(qself, path),
             Type::Reference(reference) => {
                 let lifetime = &reference.lifetime;
                 let mutability = &reference.mutability;
@@ -294,6 +299,26 @@ impl TypeResolver<'_> {
             }
             _ => quote! { #ty },
         }
+    }
+
+    /// A qualified-self path (`<user::Id as keys::Keyed>::Out`, R36-SM4-L2):
+    /// the self type and the trait path (the first `position` segments) are
+    /// re-rooted in the source module; the associated segments stay as written.
+    fn qself_path(&self, qself: &syn::QSelf, path: &syn::Path) -> TokenStream {
+        let self_ty = self.ty(&qself.ty);
+        let position = qself.position.min(path.segments.len());
+        let rest = path.segments.iter().skip(position);
+        if position == 0 {
+            return quote! { < #self_ty > :: #(#rest)::* };
+        }
+        let trait_path = syn::Path {
+            leading_colon: path.leading_colon,
+            segments: path.segments.iter().take(position).cloned().collect(),
+        };
+        let trait_path = self
+            .path(&trait_path)
+            .unwrap_or_else(|| quote! { #trait_path });
+        quote! { < #self_ty as #trait_path > :: #(#rest)::* }
     }
 
     /// An array length: every constant the source module defines or imports

@@ -26,6 +26,10 @@ fn default_alias_is_judged_through_the_module_scope() {
     assert!(judge("chrono::NaiveTime"));
     assert!(!judge("crate::models::Uuid"));
     assert!(judge("uuid::Uuid"));
+    // The chrono re-export of vespera is the chrono type too (R36-SM1-M1).
+    assert!(judge("vespera::chrono::NaiveDate"));
+    assert!(judge("vespera::chrono::NaiveDateTime"));
+    assert!(!judge("vespera::models::Date"));
     // Other names are never judged.
     assert!(judge("NaiveDate"));
     // R25-SM1-L1: a multi-segment path is judged through the module's

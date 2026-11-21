@@ -686,7 +686,7 @@ fn call_site_definition_checks_the_inline_module_of_an_own_entry() {
 #[case::top_level_reexport("User", 1, "crate::models::user")]
 #[case::inline_reexport("User", 6, "crate::models::user")]
 #[case::reexport_missing("Gone", 1, "")]
-#[case::external_import("Foreign", 1, "")]
+#[case::external_import("Foreign", 1, "other_crate")]
 #[case::unknown("Nothing", 1, "")]
 fn bare_lookup_follows_imports_and_reexports(
     #[case] name: &str,
@@ -724,6 +724,15 @@ fn bare_lookup_follows_imports_and_reexports(
     if module.is_empty() {
         assert!(
             matches!(result, Err(LookupError::BareNotFound { .. })),
+            "{result:?}"
+        );
+        return;
+    }
+    // R36-SM2-01: a name imported from another crate is that crate's, not a
+    // `BareNotFound` (which would send the caller to a qualified path).
+    if module == "other_crate" {
+        assert!(
+            matches!(&result, Err(LookupError::ExternalCrate { path }) if path.as_str() == module),
             "{result:?}"
         );
         return;

@@ -115,7 +115,10 @@ fn metas(tokens: proc_macro2::TokenStream) -> Vec<syn::Meta> {
 /// The `serde(..)` items of `attrs`: a plain `serde(..)` and the ones a
 /// `cfg_attr(predicate, serde(..))` adds whose predicate `keep_cfg` accepts.
 /// The container judges only the statically active ones (the proxy honours
-/// nothing else, R35-SM4-L1); a field's items are all judged.
+/// nothing else, R35-SM4-L1); a field's items are all judged. A nested
+/// `cfg_attr(q, serde(..))` under `predicate` is read under `all(predicate,
+/// q)`, the predicate `field_attrs::filtered_cfg_items` gives the copy
+/// (R36-SM4-L1).
 pub(super) fn serde_metas(
     attrs: &[syn::Attribute],
     keep_cfg: &dyn Fn(&Predicate) -> bool,
@@ -129,25 +132,39 @@ pub(super) fn serde_metas(
                     .map(|list| metas(list.tokens.clone()))
                     .unwrap_or_default()
             } else if attr.path().is_ident("cfg_attr") {
-                let Ok((predicate, items)) = attr.parse_args_with(cfg_attr_items) else {
-                    return Vec::new();
-                };
-                if !keep_cfg(&predicate) {
-                    return Vec::new();
-                }
-                items
-                    .into_iter()
-                    .filter_map(|meta| match meta {
-                        syn::Meta::List(list) if list.path.is_ident("serde") => {
-                            Some(metas(list.tokens))
-                        }
-                        _ => None,
-                    })
-                    .flatten()
-                    .collect()
+                attr.parse_args_with(cfg_attr_items).map_or_else(
+                    |_| Vec::new(),
+                    |(predicate, items)| cfg_serde_metas(&predicate, items, keep_cfg),
+                )
             } else {
                 Vec::new()
             }
+        })
+        .collect()
+}
+
+/// The serde items a `cfg_attr` under `predicate` adds (see [`serde_metas`]).
+fn cfg_serde_metas(
+    predicate: &Predicate,
+    items: Punctuated<syn::Meta, syn::Token![,]>,
+    keep_cfg: &dyn Fn(&Predicate) -> bool,
+) -> Vec<syn::Meta> {
+    items
+        .into_iter()
+        .flat_map(|meta| match meta {
+            syn::Meta::List(list) if list.path.is_ident("serde") && keep_cfg(predicate) => {
+                metas(list.tokens)
+            }
+            syn::Meta::List(list) if list.path.is_ident("cfg_attr") => {
+                list.parse_args_with(cfg_attr_items).map_or_else(
+                    |_| Vec::new(),
+                    |(inner, nested)| {
+                        let combined: Predicate = syn::parse_quote!(all(#predicate, #inner));
+                        cfg_serde_metas(&combined, nested, keep_cfg)
+                    },
+                )
+            }
+            _ => Vec::new(),
         })
         .collect()
 }

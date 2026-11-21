@@ -77,7 +77,16 @@ fn path_lookup_revalidates_when_resolved_file_mtime_changes() {
 fn test_print_profile_summary_with_profile_env() {
     let _env_guard = crate::env_access::test_env::set_var("VESPERA_PROFILE", "1");
 
-    print_profile_summary();
+    // R36-SM1-L1: the report is asserted on, not just printed. Every counter
+    // line is there, and a parse moves the `struct parses` line.
+    let before = profile_summary_report().expect("VESPERA_PROFILE is set");
+    assert!(before.starts_with("[vespera-profile] File cache stats:\n"));
+    assert!(before.contains("\n  struct parses: "));
+    assert!(before.contains("\n  module path: "));
+    parse_struct_cached("pub struct Probe;").expect("probe parses");
+    let after = profile_summary_report().expect("VESPERA_PROFILE is set");
+    assert_ne!(before, after, "a struct parse must change the report");
+    assert!(after.contains("\n  struct parses: "));
 
     let _env_guard = crate::env_access::test_env::remove_var("VESPERA_PROFILE");
 }
@@ -86,6 +95,7 @@ fn test_print_profile_summary_with_profile_env() {
 fn test_print_profile_summary_without_profile_env() {
     let _env_guard = crate::env_access::test_env::remove_var("VESPERA_PROFILE");
 
+    assert!(profile_summary_report().is_none());
     print_profile_summary();
 }
 
