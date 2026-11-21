@@ -812,7 +812,7 @@ class VesperaWireTest {
     }
 
     @Test
-    void directAsciiScratchGrowsThenUsesLargeTemporaryArray() {
+    void directAsciiReadsRoundTripForMediumAndLargeLengths() {
         WireHeaderReader.clearCurrentThreadBuffers();
         String medium = "m".repeat(300);
         ByteBuffer mediumBuffer = ByteBuffer.allocateDirect(medium.length());

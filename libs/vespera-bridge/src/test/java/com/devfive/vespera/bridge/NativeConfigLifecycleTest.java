@@ -5,8 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 /** Runtime start hook + upload-producer knob of {@link VesperaNativeConfig}. */
+@ExtendWith(NativeConfigReset.class)
 class NativeConfigLifecycleTest {
 
     @Test
