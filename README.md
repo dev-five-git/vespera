@@ -1526,7 +1526,7 @@ failure (malformed wire `400`, unknown app `404`, too large `413`, handler panic
 is a normal wire response returning `VESPERA_OK`. Negative codes mean API misuse
 (`VESPERA_ERR_INVALID_ARGUMENT`) or init failures. All functions are thread-safe; panics never unwind
 across the ABI. Don't call the synchronous functions from an async-completion callback (it runs on a
-runtime worker). Runtime sizing and limits come from the `vespera_configure_*` functions (call them before
+runtime worker, or inline on the calling thread for an early rejection). Runtime sizing and limits come from the `vespera_configure_*` functions (call them before
 `vespera_init`) or else the same `VESPERA_*` environment variables as JNI (`VESPERA_RUNTIME_WORKERS`,
 `VESPERA_ASYNC_MAX_IN_FLIGHT`, ...). The async in-flight cap is one counter shared with JNI `dispatchAsync`.
 A handler that still blocks its worker thread when `vespera_shutdown` times out is abandoned: its async
