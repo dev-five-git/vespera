@@ -28,6 +28,8 @@ use super::file_cache;
 
 mod declared;
 pub use declared::declared_module_of;
+mod visibility;
+pub(in crate::schema_macro) use visibility::{path_readable_from, readable_from};
 
 /// Items of one module plus the location state needed to descend further.
 #[derive(Clone)]
@@ -486,6 +488,8 @@ pub struct ModuleScope {
     /// Imports / items declared without `pub`: a glob import only brings
     /// them into the module's own descendants.
     pub private: HashSet<String>,
+    /// Each item's readable scope (`visibility.rs`): `None` for a `pub` item.
+    read_scopes: HashMap<String, Option<Vec<String>>>,
 }
 
 /// The ident an item defines in its module's type / value namespace.
@@ -534,6 +538,9 @@ impl ModuleScope {
             if matches!(vis, syn::Visibility::Inherited) {
                 scope.private.insert(name.clone());
             }
+            scope
+                .read_scopes
+                .insert(name.clone(), visibility::read_scope(vis, module_path));
             scope.locals.insert(name);
         }
         for item in &items {

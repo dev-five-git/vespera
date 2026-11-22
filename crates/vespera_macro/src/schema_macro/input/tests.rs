@@ -278,6 +278,17 @@ fn test_parse_schema_type_input_strips_raw_prefix_from_source_names() {
     assert!(input.spans.field("rename", "type").is_some());
 }
 
+/// SM3-L1 (round 40): a raw `pick` name is compared unraw (`r#id` is `id`), so
+/// its span is found by that spelling, not only by the written one.
+#[test]
+fn test_parse_schema_type_input_pick_span_of_a_raw_name_is_unraw() {
+    let tokens = quote::quote!(UpdateUser from User, pick = ["r#id", "name"]);
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    assert_eq!(input.pick.unwrap(), vec!["id", "name"]);
+    assert!(input.spans.field("pick", "id").is_some());
+    assert!(input.spans.field("pick", "r#id").is_none());
+}
+
 #[test]
 fn test_parse_schema_type_input_with_pick_and_partial() {
     let tokens = quote::quote!(UpdateUser from User, pick = ["name", "email"], partial);

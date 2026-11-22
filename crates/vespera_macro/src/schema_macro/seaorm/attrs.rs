@@ -163,6 +163,37 @@ pub fn extract_sea_orm_default_value(attrs: &[syn::Attribute]) -> Option<String>
     })
 }
 
+/// The SQL function of SeaORM's `default_expr = "Expr::cust(\"NOW()\")"`, the
+/// spelling of the database default `default_value = "NOW()"` gives the
+/// serde / schema default code (DEFERRED-X1, round 40). Any other expression
+/// (`Expr::current_timestamp()`, a literal `Expr::cust("'draft'")`) has no SQL
+/// function text here: `None`.
+pub fn extract_sea_orm_default_expr_sql(attrs: &[syn::Attribute]) -> Option<String> {
+    let entries = sea_orm_entries(attrs);
+    let text = string_value(entry(&entries, "default_expr")?.value.as_ref()?)?;
+    let syn::Expr::Call(call) = syn::parse_str::<syn::Expr>(&text).ok()? else {
+        return None;
+    };
+    let syn::Expr::Path(func) = call.func.as_ref() else {
+        return None;
+    };
+    let is_cust = func
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .eq(["Expr", "cust"]);
+    match call.args.first() {
+        Some(syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(sql),
+            ..
+        })) if is_cust && call.args.len() == 1 && is_sql_function_default(&sql.value()) => {
+            Some(sql.value())
+        }
+        _ => None,
+    }
+}
+
 /// Whether the column has a database default `omit_default` drops it for:
 /// `default_value`, or SeaORM 2's `default_expr = ".."` (an expression, never
 /// fed to the serde / schema default code; L7, round 18: it was ignored).
@@ -460,6 +491,30 @@ mod tests {
     ) {
         let attr: syn::Attribute = syn::parse_quote!(#attr);
         assert_eq!(has_sea_orm_database_default(&[attr]), expected);
+    }
+
+    /// DEFERRED-X1 (round 40): only `Expr::cust("<SQL function>")` gives SQL
+    /// text the serde / schema default code reads; anything else gives none.
+    #[rstest::rstest]
+    #[case::cust_now(r#"#[sea_orm(default_expr = "Expr::cust(\"NOW()\")")]"#, Some("NOW()"))]
+    #[case::cust_uuid(
+        r#"#[sea_orm(default_expr = "Expr::cust(\"gen_random_uuid()\")")]"#,
+        Some("gen_random_uuid()")
+    )]
+    #[case::cust_literal(r#"#[sea_orm(default_expr = "Expr::cust(\"'draft'\")")]"#, None)]
+    #[case::current_timestamp(r#"#[sea_orm(default_expr = "Expr::current_timestamp()")]"#, None)]
+    #[case::cust_two_args(r#"#[sea_orm(default_expr = "Expr::cust(\"NOW()\", 1)")]"#, None)]
+    #[case::not_a_call(r#"#[sea_orm(default_expr = "NOW()")]"#, None)]
+    #[case::not_a_string(r"#[sea_orm(default_expr = 1)]", None)]
+    #[case::not_a_path_call(r#"#[sea_orm(default_expr = "(f)(\"NOW()\")")]"#, None)]
+    #[case::bare_default_expr(r"#[sea_orm(default_expr)]", None)]
+    #[case::default_value_only(r#"#[sea_orm(default_value = "NOW()")]"#, None)]
+    fn test_extract_sea_orm_default_expr_sql(#[case] attr: &str, #[case] expected: Option<&str>) {
+        let item: syn::ItemStruct = syn::parse_str(&format!("{attr} struct S;")).unwrap();
+        assert_eq!(
+            extract_sea_orm_default_expr_sql(&item.attrs).as_deref(),
+            expected
+        );
     }
 
     #[test]

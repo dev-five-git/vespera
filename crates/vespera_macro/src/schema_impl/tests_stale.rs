@@ -320,3 +320,61 @@ fn deleted_derive_is_left_when_a_generated_twin_takes_its_name() {
     remove("GuardDto");
     assert!(result.is_ok());
 }
+
+/// SM0-L1 (round 40, IDE-only): a derived entry whose item is replaced on its
+/// own line by a `schema_type!` naming the same ident has left its position:
+/// the invocation is not the item (only a generated record's invocation counts).
+/// A derived item edited in place on that line is still declared.
+#[test]
+fn derive_replaced_by_schema_type_on_its_line_has_left_the_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("swap.rs");
+    std::fs::write(&file, "#[derive(Schema)] pub struct User { id: i32 }\n").unwrap();
+    bump_epoch();
+    let identity = identity(&file, 1);
+    super::stale::record(Some(&identity));
+    let stored = StructMetadata {
+        source_identity: Some(identity),
+        ..StructMetadata::new("User".to_string(), String::new())
+    };
+
+    std::fs::write(&file, "#[derive(Schema)] pub struct User { id: i64 }\n").unwrap();
+    bump_epoch();
+    assert!(!super::stale::left_its_file(&stored));
+
+    std::fs::write(&file, "schema_type!(User from Model);\n").unwrap();
+    bump_epoch();
+    assert!(super::stale::left_its_file(&stored));
+}
+
+/// SM0-L1 (round 40), variant scope: the same swap inside the inline module
+/// the derive sat in.
+#[test]
+fn derive_replaced_by_schema_type_in_its_module_has_left_the_module() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("swap_mod.rs");
+    std::fs::write(
+        &file,
+        "mod m { #[derive(Schema)] pub struct User { id: i32 } }\n",
+    )
+    .unwrap();
+    bump_epoch();
+    let identity = identity(&file, 1);
+    super::stale::record(Some(&identity));
+    let stored = StructMetadata {
+        source_identity: Some(identity),
+        ..StructMetadata::new("User".to_string(), String::new())
+    };
+
+    std::fs::write(&file, "mod m { schema_type!(User from Model); }\n").unwrap();
+    bump_epoch();
+    assert!(super::stale::left_its_module(&stored));
+
+    std::fs::write(
+        &file,
+        "mod m { #[derive(Schema)] pub struct User { id: i64 } }\n",
+    )
+    .unwrap();
+    bump_epoch();
+    assert!(!super::stale::left_its_module(&stored));
+}

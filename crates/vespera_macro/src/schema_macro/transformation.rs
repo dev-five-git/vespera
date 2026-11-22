@@ -34,7 +34,7 @@ use quote::{ToTokens, quote};
 use syn::punctuated::Punctuated;
 
 use super::input::PartialMode;
-use super::module_scope::{Resolved, path_tokens, resolve_name};
+use super::module_scope::{Resolved, path_readable_from, path_tokens, resolve_name};
 use crate::parser::extract_rename_all_for;
 use crate::parser::schema::{SerdeSide, extract_field_rename_for, rename_field};
 
@@ -779,6 +779,60 @@ pub fn should_wrap_in_option(
     is_relation: bool,
 ) -> bool {
     (partial_all || partial_set.contains(field_name)) && !is_already_option && !is_relation
+}
+
+/// The first serde function path of `attrs` (`default = "f"`, `with = "m::f"`,
+/// ...) naming an item the call site cannot read: the DTO carrying the
+/// attribute is emitted there, where a private `f` of `module_path` is `E0603`.
+pub fn unreadable_serde_path(
+    attrs: &[syn::Attribute],
+    module_path: &[String],
+    call_site: Option<&[String]>,
+) -> Option<syn::Error> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+        .find_map(|attr| {
+            let items = attr
+                .parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                .ok()?;
+            items.iter().find_map(|meta| {
+                let syn::Meta::NameValue(nv) = meta else {
+                    return None;
+                };
+                let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(lit),
+                    ..
+                }) = &nv.value
+                else {
+                    return None;
+                };
+                if !SERDE_PATH_KEYS.contains(&serde_key_of(&nv.path).as_str()) {
+                    return None;
+                }
+                let path: syn::Path = syn::parse_str(&lit.value()).ok()?;
+                if path.leading_colon.is_some() {
+                    return None;
+                }
+                let names: Vec<String> = path
+                    .segments
+                    .iter()
+                    .map(|segment| crate::parser::strip_raw_prefix_owned(segment.ident.to_string()))
+                    .collect();
+                let Resolved::Path(resolved) = resolve_name(&names, module_path) else {
+                    return None;
+                };
+                (!path_readable_from(&resolved, call_site)).then(|| {
+                    syn::Error::new_spanned(
+                        lit,
+                        format!(
+                            "serde path `{}` names an item private to its module: make it `pub(crate)`, or declare the DTO in that module",
+                            lit.value()
+                        ),
+                    )
+                })
+            })
+        })
 }
 
 #[cfg(test)]

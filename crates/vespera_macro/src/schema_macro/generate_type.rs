@@ -24,6 +24,7 @@ use super::inline_types::{
 };
 use super::input::{PartialMode, SchemaTypeInput};
 use super::instantiate::{instantiate_with_bindings, self_path};
+use super::module_scope::readable_from;
 use super::module_scope::segment_ident as field_ident;
 use super::same_file_override::maybe_generate_same_file_relation_override;
 use super::seaorm::{
@@ -525,11 +526,7 @@ pub fn generate_schema_type_code(
             // `pub(super)` / `pub(in ..)` name source-relative modules.
             let vis = assignments::dto_visibility(&field.vis);
             all_readable &= relation.is_some()
-                || assignments::readable_from(
-                    &field.vis,
-                    &source_module_path,
-                    call_site.as_deref(),
-                );
+                || readable_from(&field.vis, &source_module_path, call_site.as_deref());
             let source_field_ident: syn::Ident = field.ident.clone().unwrap();
             // A `rename`d field gets the new name; the wire name stays.
             let new_name = rename_map.get(&rust_field_name);
@@ -720,6 +717,8 @@ pub fn generate_schema_type_code(
         &source_type_name,
     )?;
     let emitted = checks::emitted_source_names(&field_mappings);
+    checks::check_serde_paths(&parsed_struct.fields, &emitted, &source_module_path)?;
+    checks::check_transparent(&parsed_struct.attrs, input, field_mappings.len())?;
     let peer_context = PeerContext {
         source_fields: &source_field_names,
         emitted: &emitted,
@@ -795,8 +794,7 @@ pub fn generate_schema_type_code(
         if let Some(column) = source_column_read(rel, &parsed_struct.fields)
             && let Some(field) = source_field_named(&parsed_struct.fields, &column)
         {
-            all_readable &=
-                assignments::readable_from(&field.vis, &source_module_path, call_site.as_deref());
+            all_readable &= readable_from(&field.vis, &source_module_path, call_site.as_deref());
         }
     }
 
@@ -979,8 +977,6 @@ pub fn generate_schema_type_code(
 
 pub(super) mod assignments;
 
-/// Shared with `from_model::target_shape`, which predicts the emitted shape.
-pub(in crate::schema_macro) use assignments::readable_from;
 mod checks;
 mod multipart_carry;
 mod resolve;

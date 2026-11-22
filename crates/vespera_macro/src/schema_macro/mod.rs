@@ -25,6 +25,8 @@ pub mod module_scope;
 mod requested_variant_tests;
 mod same_file_override;
 mod seaorm;
+#[cfg(test)]
+mod tests_round40;
 mod transformation;
 pub mod type_utils;
 mod validation;
@@ -294,7 +296,7 @@ mod tests {
     #[rstest::rstest]
     #[case::renamed_source(vec![renamed("UserDto", "User")], "User", Some("User_field"))]
     #[case::hijacking_rename(vec![renamed("User", "UserRow")], "User", None)]
-    #[case::rename_target_is_not_an_ident(vec![renamed("UserDto", "User")], "UserDto", None)]
+    #[case::schema_name_is_not_the_rust_ident(vec![renamed("UserDto", "User")], "UserDto", None)]
     #[case::plain_wins(vec![create_test_struct_metadata("User", "pub struct User { pub plain: i32 }"), renamed("Other", "User")], "User", Some("plain"))]
     #[case::ambiguous(vec![renamed("A", "User"), renamed("B", "User")], "User", None)]
     fn storage_entry_matches_the_rust_ident(

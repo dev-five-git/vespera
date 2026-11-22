@@ -27,9 +27,9 @@ pub struct Model {
     pub content: String,
     #[sea_orm(default_value = "draft")]
     pub status: MemoStatus,
-    #[sea_orm(default_value = "NOW()")]
+    #[sea_orm(default_expr = "Expr::cust(\"NOW()\")")]
     pub created_at: DateTimeWithTimeZone,
-    #[sea_orm(default_value = "NOW()")]
+    #[sea_orm(default_expr = "Expr::cust(\"NOW()\")")]
     pub updated_at: DateTimeWithTimeZone,
     #[sea_orm(belongs_to, from = "user_id", to = "id")]
     pub user: HasOne<super::user::Entity>,

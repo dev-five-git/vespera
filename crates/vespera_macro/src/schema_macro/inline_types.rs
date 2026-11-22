@@ -12,7 +12,7 @@ use super::{
     field_attrs::{carried_field_attrs, reroot_schema_attr},
     file_cache::{get_circular_analysis, get_module_path_from_schema_path},
     file_lookup::{call_site_module, find_model_from_schema_path},
-    generate_type::assignments::readable_from,
+    module_scope::readable_from,
     seaorm::{RelationFieldInfo, convert_type_with_chrono},
     transformation::{RenameAll, reroot_serde_paths, serde_only_attrs},
     type_utils::{is_seaorm_relation_type, snake_to_pascal_case},

@@ -4,10 +4,13 @@
 
 use std::collections::{HashMap, HashSet};
 
+use syn::punctuated::Punctuated;
+
 use crate::parser::strip_raw_prefix_owned;
 
 use super::super::from_model::FieldMapping;
 use super::super::input::SchemaTypeInput;
+use super::super::transformation::unreadable_serde_path;
 use super::super::validation::{
     ErrorAt, SpannedSource, validate_emitted, validate_unique_field_names,
 };
@@ -118,4 +121,95 @@ pub(super) fn check_emitted(
         input.add.as_ref(),
         at,
     )
+}
+
+/// The serde function paths of the emitted fields must name items the call
+/// site can read (a private `default_name` of the source module is `E0603` in
+/// the DTO emitted elsewhere).
+pub(super) fn check_serde_paths(
+    fields: &syn::Fields,
+    emitted: &HashSet<String>,
+    source_module: &[String],
+) -> syn::Result<()> {
+    let call_site = super::super::file_lookup::call_site_module();
+    for field in fields {
+        let emitted_field = field
+            .ident
+            .as_ref()
+            .is_some_and(|ident| emitted.contains(&strip_raw_prefix_owned(ident.to_string())));
+        if emitted_field
+            && let Some(error) =
+                unreadable_serde_path(&field.attrs, source_module, call_site.as_deref())
+        {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// `#[serde(transparent)]` (copied from the source) is serde's newtype form:
+/// it needs exactly one field in the DTO, which `add` / `omit` can change
+/// (SM4-02, round 40). `emitted` counts the source fields the DTO keeps.
+pub(super) fn check_transparent(
+    attrs: &[syn::Attribute],
+    input: &SchemaTypeInput,
+    emitted: usize,
+) -> syn::Result<()> {
+    let transparent = attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+        .any(|attr| {
+            attr.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                .is_ok_and(|items| items.iter().any(|meta| meta.path().is_ident("transparent")))
+        });
+    let field_count = emitted + input.add.as_ref().map_or(0, Vec::len);
+    if transparent && field_count != 1 {
+        return Err(syn::Error::new(
+            input.new_type.span(),
+            format!(
+                "schema_type!: `{}` would keep the source's `#[serde(transparent)]`, which needs exactly one field, but emits {field_count}: drop `transparent` from the source or keep one field",
+                input.new_type
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case::one_field_keeps_it(r"#[serde(transparent)]", "Dto from Src", 1, true)]
+    #[case::two_fields_refused(r"#[serde(transparent)]", "Dto from Src", 2, false)]
+    #[case::no_field_refused(r"#[serde(transparent)]", "Dto from Src", 0, false)]
+    #[case::added_field_counts(
+        r"#[serde(transparent)]",
+        "Dto from Src, add = [(\"extra\": i32)]",
+        1,
+        false
+    )]
+    #[case::beside_other_keys(
+        r"#[serde(deny_unknown_fields, transparent)]",
+        "Dto from Src",
+        3,
+        false
+    )]
+    #[case::not_transparent(r"#[serde(deny_unknown_fields)]", "Dto from Src", 3, true)]
+    #[case::not_serde(r"#[transparent]", "Dto from Src", 3, true)]
+    fn transparent_needs_exactly_one_field(
+        #[case] attr: &str,
+        #[case] dsl: &str,
+        #[case] emitted: usize,
+        #[case] accepted: bool,
+    ) {
+        let source: syn::DeriveInput = syn::parse_str(&format!("{attr} struct S;")).unwrap();
+        let input: SchemaTypeInput = syn::parse_str(dsl).unwrap();
+        assert_eq!(
+            check_transparent(&source.attrs, &input, emitted).is_ok(),
+            accepted
+        );
+    }
 }

@@ -11,7 +11,7 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
     /// Created at (server-local time)
-    #[sea_orm(default_value = "NOW()")]
+    #[sea_orm(default_expr = "Expr::cust(\"NOW()\")")]
     pub created_at: DateTimeLocal,
 }
 

@@ -131,6 +131,7 @@ fn both_filters_error(span: proc_macro2::Span) -> syn::Error {
 /// Or:     `schema_type!(NewTypeName from SourceType, ignore)` - skip Schema derive
 /// Or:     `schema_type!(NewTypeName from SourceType, name = "CustomName")` - custom `OpenAPI` name
 /// Or:     `schema_type!(NewTypeName from SourceType, rename_all = "camelCase")` - serde `rename_all`
+/// Or:     `schema_type!(NewTypeName from SourceType, partial, clone = false, multipart, omit_default, relation_adapters = [("field", Adapter)])` - see the fields below
 #[allow(clippy::struct_excessive_bools)]
 pub struct SchemaTypeInput {
     /// The new type name to generate
@@ -154,7 +155,9 @@ pub struct SchemaTypeInput {
     ///
     /// - `partial` (bare) = all fields become `Option<T>`
     /// - `partial = ["field1", "field2"]` = only listed fields become `Option<T>`
-    /// - Fields already `Option<T>` are left unchanged.
+    /// - Fields already `Option<T>` are left unchanged; SeaORM relation fields
+    ///   are never wrapped (their shape comes from the relation conversion), so
+    ///   naming one is an error.
     pub partial: Option<PartialMode>,
     /// Whether to skip deriving the Schema trait (default: false)
     /// Use `ignore` keyword to set this to true.
@@ -358,14 +361,18 @@ impl Parse for SchemaTypeInput {
                     if param == "pick" && fields.is_empty() {
                         return Err(empty_pick_error(ident.span()));
                     }
-                    for lit in &fields {
-                        spans.record(param, lit);
-                    }
-                    let names = Some(fields.into_iter().map(|s| s.value()).collect());
+                    // `pick` names are unraw (`r#id` is `id`) wherever they are
+                    // compared, so their span is looked up by that spelling too.
                     if param == "omit" {
-                        omit = names;
+                        for lit in &fields {
+                            spans.record(param, lit);
+                        }
+                        omit = Some(fields.into_iter().map(|s| s.value()).collect());
                     } else {
-                        pick = names;
+                        for lit in &fields {
+                            spans.record_source(param, lit);
+                        }
+                        pick = Some(fields.iter().map(source_field_name).collect());
                     }
                 }
                 "rename" => {

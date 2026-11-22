@@ -6,9 +6,9 @@ mod relations;
 
 pub use attrs::{
     extract_belongs_to_from_field, extract_belongs_to_to_raw, extract_relation_enum,
-    extract_sea_orm_default_value, has_sea_orm_database_default, has_sea_orm_primary_key,
-    is_composite_columns, is_sea_orm_primary_key, is_sql_function_default, normalize_columns,
-    primary_key_count,
+    extract_sea_orm_default_expr_sql, extract_sea_orm_default_value, has_sea_orm_database_default,
+    has_sea_orm_primary_key, is_composite_columns, is_sea_orm_primary_key, is_sql_function_default,
+    normalize_columns, primary_key_count,
 };
 pub use conversion::convert_type_with_chrono;
 #[cfg(test)]
