@@ -149,11 +149,12 @@ fn gated_child_conflicts(
                  or give the child app a distinct `export_app!(..., prefix = \"...\")`",
                 describe(&conflict, &route_name, &owner)
             );
-            let predicates = route.cfg.iter().map(|predicate| {
-                predicate
-                    .parse::<proc_macro2::TokenStream>()
-                    .unwrap_or_default()
-            });
+            // Fail closed like the router's gates: an `all()` for a predicate
+            // that does not re-parse would make this error unconditional.
+            let predicates = match crate::router_codegen::parse_cfg_predicates(&route.cfg) {
+                Ok(predicates) => predicates,
+                Err(error) => return Some(error),
+            };
             Some(quote::quote!(#[cfg(all(#(#predicates),*))] ::core::compile_error!(#message);))
         })
         .collect()
@@ -500,5 +501,45 @@ mod tests {
             "{}",
             errors[0]
         );
+    }
+
+    /// A gated route whose predicate does not re-parse is an unconditional
+    /// `compile_error!`, not one under `#[cfg(all())]` (always true) built from
+    /// an empty predicate: the router's gates fail closed the same way
+    /// (round-39 M5-L1).
+    #[test]
+    fn unparsable_gated_predicate_is_an_unconditional_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let _manifest = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+        let vespera_dir =
+            crate::vespera_impl::path_utils::find_target_dir(temp_dir.path()).join("vespera");
+        fs::create_dir_all(&vespera_dir).unwrap();
+        fs::write(
+            super::super::merge_lookup::child_spec_path(&vespera_dir, "child", "OpsApp"),
+            spec(&[("get", "/health")]),
+        )
+        .unwrap();
+        let merge = [syn::parse_str::<syn::Path>("child::OpsApp").unwrap()];
+        let mut metadata = CollectedMetadata::new();
+        metadata.cfg_routes = vec![crate::metadata::CfgRoute {
+            cfg: vec!["feature = \"ops\" )".to_owned()],
+            method: "get".to_owned(),
+            path: "/health".to_owned(),
+            module_path: "routes::ops".to_owned(),
+            function_name: "health".to_owned(),
+            file_path: "src/routes/ops.rs".to_owned(),
+            deprecated: false,
+        }];
+        let errors =
+            check_merge_route_conflicts(&metadata, &[], &merge, &mut MergeSpecCache::new())
+                .unwrap();
+        let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains("cannot re-parse the cfg predicate"),
+            "{}",
+            errors[0]
+        );
+        assert!(!errors[0].contains("cfg (all"), "{}", errors[0]);
     }
 }

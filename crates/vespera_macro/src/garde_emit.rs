@@ -350,10 +350,14 @@ fn emit_rule_blocks(
 
     // ── Numeric range (minimum / maximum → range::apply) ──────────────
     if c.minimum.is_some() || c.maximum.is_some() {
-        let bounds =
-            numeric_some(c.minimum, exact.minimum, Bound::Min, numeric_kind).and_then(|min| {
+        let bounds = numeric_some(c.minimum, exact.minimum, Bound::Min, numeric_kind)
+            .and_then(|min| {
                 numeric_some(c.maximum, exact.maximum, Bound::Max, numeric_kind)
                     .map(|max| (min, max))
+            })
+            .and_then(|bounds| {
+                empty_integer_range(numeric_kind, c.minimum, c.maximum, exact)
+                    .map_or(Ok(bounds), Err)
             });
         let (min_expr, max_expr) = match bounds {
             Ok(bounds) => bounds,
@@ -764,6 +768,37 @@ fn float_some(kind: &str, v: f64, bound: Bound, key: &str) -> Result<TokenStream
         }
     };
     Ok(quote! { ::std::option::Option::Some({ let __garde_bound = #v as f32; #inward }) })
+}
+
+/// The message for an integer field whose declared interval holds no value:
+/// `minimum` above `maximum` once the fractional bounds round inward
+/// (`minimum = 2.5, maximum = 2.7` on `i32` is `3..=2`). Garde's range rule
+/// would reject every value, so the declaration is a compile error. An integer
+/// literal bound is compared exactly; the check runs after `numeric_some`, so
+/// an out-of-range bound keeps its own error.
+#[cfg(feature = "validation")]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn empty_integer_range(
+    kind: Option<&str>,
+    minimum: Option<f64>,
+    maximum: Option<f64>,
+    exact: &ExactBounds,
+) -> Option<String> {
+    let kind = kind.filter(|kind| integer_range(kind).is_some())?;
+    let (Some(minimum), Some(maximum)) = (minimum, maximum) else {
+        return None;
+    };
+    let whole = |value: f64| ExactInt {
+        negative: value < 0.0,
+        magnitude: value.abs() as u128,
+    };
+    let lower = exact.minimum.unwrap_or_else(|| whole(minimum.ceil()));
+    let upper = exact.maximum.unwrap_or_else(|| whole(maximum.floor()));
+    (lower > upper).then(|| {
+        format!(
+            "`minimum` ({lower}) is above `maximum` ({upper}) for the field type `{kind}`, so no value satisfies the range"
+        )
+    })
 }
 
 /// Whether an alias bound's integer literal is emitted as an `i128` literal

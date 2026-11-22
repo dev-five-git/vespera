@@ -827,8 +827,9 @@ fn unreached_materialised_input_instances_are_pruned() {
     let names: request_view::InputNames = std::sync::Arc::new(
         BTreeMap::from([("Forest".to_string(), "ForestInput".to_string())]).into(),
     );
+    let generated = generated_request_views(&names, &schemas);
     let mut response_only = schemas.clone();
-    prune_unreferenced_inputs(&mut response_only, &BTreeMap::new(), &names);
+    prune_unreferenced_inputs(&mut response_only, &BTreeMap::new(), &generated);
     assert_eq!(response_only.keys().collect::<Vec<_>>(), ["Forest"]);
 
     let paths: BTreeMap<String, vespera_core::route::PathItem> = BTreeMap::from([(
@@ -840,7 +841,7 @@ fn unreached_materialised_input_instances_are_pruned() {
         )
         .unwrap(),
     )]);
-    prune_unreferenced_inputs(&mut schemas, &paths, &names);
+    prune_unreferenced_inputs(&mut schemas, &paths, &generated);
     assert_eq!(
         schemas.keys().collect::<Vec<_>>(),
         ["Forest", "ForestInput", "Tree_i32.Input"]
@@ -869,6 +870,7 @@ fn response_property_named_like_a_request_key_does_not_reach_input() {
             serde_json::from_value::<vespera_core::route::PathItem>(value).unwrap(),
         )])
     };
+    let generated = generated_request_views(&names, &base());
     // The response references the request view by name (FilterInput) under
     // the operation-key property names: only a request key may reach it.
     let response_body = json!({"type": "object", "properties": {
@@ -878,14 +880,14 @@ fn response_property_named_like_a_request_key_does_not_reach_input() {
     let mut schemas = base();
     let paths = path(json!({"get": {"responses": {"200": {"description": "ok",
         "content": {"application/json": {"schema": response_body}}}}}}));
-    prune_unreferenced_inputs(&mut schemas, &paths, &names);
+    prune_unreferenced_inputs(&mut schemas, &paths, &generated);
     assert_eq!(schemas.keys().collect::<Vec<_>>(), ["Filter"]);
 
     let mut schemas = base();
     let query = json!({"name": "q", "in": "query",
         "schema": {"$ref": "#/components/schemas/FilterInput"}});
     let paths = path(json!({"get": {"parameters": [query.clone()], "responses": {}}}));
-    prune_unreferenced_inputs(&mut schemas, &paths, &names);
+    prune_unreferenced_inputs(&mut schemas, &paths, &generated);
     assert_eq!(
         schemas.keys().collect::<Vec<_>>(),
         ["Filter", "FilterInput"]
@@ -894,7 +896,7 @@ fn response_property_named_like_a_request_key_does_not_reach_input() {
     // Path-level parameters apply to every operation of the path item.
     let mut schemas = base();
     let paths = path(json!({"parameters": [query]}));
-    prune_unreferenced_inputs(&mut schemas, &paths, &names);
+    prune_unreferenced_inputs(&mut schemas, &paths, &generated);
     assert_eq!(
         schemas.keys().collect::<Vec<_>>(),
         ["Filter", "FilterInput"]

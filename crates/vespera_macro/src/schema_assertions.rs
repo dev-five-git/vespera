@@ -15,7 +15,8 @@
 //!
 //! 2. **Per-field leaf-type assertions** — for each field whose leaf
 //!    type is NOT a recognized OpenAPI builtin (per
-//!    [`is_builtin_openapi_type`]), NOT `serde_json::Value`, NOT a
+//!    [`is_builtin_openapi_type`]; a user module's `api::Header` is not one,
+//!    so it is asserted), NOT `serde_json::Value`, NOT a
 //!    generic type parameter of the current struct, NOT `PhantomData` (std's;
 //!    see the exemptions of `emit_field_assertions`), and NOT marked
 //!    with `#[schema(any)]` and no `value_type` (a `value_type` on an `any`
@@ -104,7 +105,8 @@ fn emit_marker_impl(input: &syn::DeriveInput) -> TokenStream {
 ///   `deserialize_with`) without a `value_type`: documented as any value, so
 ///   its Rust type is never consulted.
 /// - Leaf path's last segment is a builtin OpenAPI ident
-///   (per [`is_builtin_openapi_type`]).
+///   (per [`is_builtin_openapi_type`]) and the path is not a user-module path
+///   (`api::Header` is a type of its own, asserted like any custom leaf).
 /// - Leaf's last segment is `PhantomData` and the path is not a user-module
 ///   path: std's `PhantomData` has no `Schema` impl and serde writes it as a
 ///   unit.

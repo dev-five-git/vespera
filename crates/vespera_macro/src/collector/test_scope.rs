@@ -204,17 +204,15 @@ impl TestScope {
         for (depth, segment) in segments.iter().enumerate() {
             let declarers = declarers_at(&src_dir, &parent, depth);
             let rest = &segments[depth..];
-            let mut gated_here = Vec::new();
+            let mut gated_here = false;
             for declarer in &declarers {
                 let mods = self.gated_mods_of(declarer);
-                gated_here.extend(
-                    mods.chains
-                        .iter()
-                        .filter(|gated| chain_starts_with(rest, gated))
-                        .cloned(),
-                );
+                gated_here |= mods
+                    .chains
+                    .iter()
+                    .any(|gated| chain_starts_with(rest, gated));
             }
-            if !gated_here.is_empty() {
+            if gated_here {
                 // The first gated link decides: a same-named ungated
                 // declaration of that link loads the file in every build, so
                 // a gated twin next to it does not make it test-only. A
@@ -222,27 +220,11 @@ impl TestScope {
                 // ungated `#[path]` module naming the file loads it as well.
                 // An ungated inline twin chain (`#[cfg(not(test))] mod a { mod b; }`
                 // beside `#[cfg(test)] mod a;`) loads the file too: `open_chain_loads`.
-                return !self.ungated_twin_loads(&declarers, &gated_here)
-                    && !self.open_path_loads(file)
-                    && !self.open_chain_loads(&src_dir, &segments);
+                return !self.open_path_loads(file) && !self.open_chain_loads(&src_dir, &segments);
             }
             parent.push(segment);
         }
         self.file_path_gated(file, &src_dir, &segments)
-    }
-
-    /// Whether one of `declarers` declares ungated one of the `gated` chains
-    /// of the same name (the module at the gated depth, not a deeper one).
-    fn ungated_twin_loads(&mut self, declarers: &[PathBuf], gated: &[String]) -> bool {
-        for declarer in declarers {
-            let mods = self.gated_mods_of(declarer);
-            if mods.open_chains.iter().any(|open| gated.contains(open))
-                && self.loads_in_every_build(declarer)
-            {
-                return true;
-            }
-        }
-        false
     }
 
     /// Whether the `mod` declarations of `declarer` load their files in every
@@ -743,6 +725,54 @@ fn item_attrs(item: &Item) -> &[syn::Attribute] {
     }
 }
 
+/// The attributes of an expression statement's expression (`#[cfg(test)]`
+/// on an `if` / `match` / loop / call / block statement gates it). Every
+/// variant that carries attributes binds them in one or-pattern.
+fn expr_attrs(expr: &syn::Expr) -> &[syn::Attribute] {
+    match expr {
+        syn::Expr::Array(syn::ExprArray { attrs, .. })
+        | syn::Expr::Assign(syn::ExprAssign { attrs, .. })
+        | syn::Expr::Async(syn::ExprAsync { attrs, .. })
+        | syn::Expr::Await(syn::ExprAwait { attrs, .. })
+        | syn::Expr::Binary(syn::ExprBinary { attrs, .. })
+        | syn::Expr::Block(syn::ExprBlock { attrs, .. })
+        | syn::Expr::Break(syn::ExprBreak { attrs, .. })
+        | syn::Expr::Call(syn::ExprCall { attrs, .. })
+        | syn::Expr::Cast(syn::ExprCast { attrs, .. })
+        | syn::Expr::Closure(syn::ExprClosure { attrs, .. })
+        | syn::Expr::Const(syn::ExprConst { attrs, .. })
+        | syn::Expr::Continue(syn::ExprContinue { attrs, .. })
+        | syn::Expr::Field(syn::ExprField { attrs, .. })
+        | syn::Expr::ForLoop(syn::ExprForLoop { attrs, .. })
+        | syn::Expr::Group(syn::ExprGroup { attrs, .. })
+        | syn::Expr::If(syn::ExprIf { attrs, .. })
+        | syn::Expr::Index(syn::ExprIndex { attrs, .. })
+        | syn::Expr::Infer(syn::ExprInfer { attrs, .. })
+        | syn::Expr::Let(syn::ExprLet { attrs, .. })
+        | syn::Expr::Lit(syn::ExprLit { attrs, .. })
+        | syn::Expr::Loop(syn::ExprLoop { attrs, .. })
+        | syn::Expr::Macro(syn::ExprMacro { attrs, .. })
+        | syn::Expr::Match(syn::ExprMatch { attrs, .. })
+        | syn::Expr::MethodCall(syn::ExprMethodCall { attrs, .. })
+        | syn::Expr::Paren(syn::ExprParen { attrs, .. })
+        | syn::Expr::Path(syn::ExprPath { attrs, .. })
+        | syn::Expr::Range(syn::ExprRange { attrs, .. })
+        | syn::Expr::RawAddr(syn::ExprRawAddr { attrs, .. })
+        | syn::Expr::Reference(syn::ExprReference { attrs, .. })
+        | syn::Expr::Repeat(syn::ExprRepeat { attrs, .. })
+        | syn::Expr::Return(syn::ExprReturn { attrs, .. })
+        | syn::Expr::Struct(syn::ExprStruct { attrs, .. })
+        | syn::Expr::Try(syn::ExprTry { attrs, .. })
+        | syn::Expr::TryBlock(syn::ExprTryBlock { attrs, .. })
+        | syn::Expr::Tuple(syn::ExprTuple { attrs, .. })
+        | syn::Expr::Unary(syn::ExprUnary { attrs, .. })
+        | syn::Expr::Unsafe(syn::ExprUnsafe { attrs, .. })
+        | syn::Expr::While(syn::ExprWhile { attrs, .. })
+        | syn::Expr::Yield(syn::ExprYield { attrs, .. }) => attrs,
+        _ => &[],
+    }
+}
+
 impl<'ast> syn::visit::Visit<'ast> for GatedCollector<'_> {
     fn visit_item(&mut self, item: &'ast Item) {
         if let Item::Struct(syn::ItemStruct { attrs, ident, .. })
@@ -781,8 +811,8 @@ impl<'ast> syn::visit::Visit<'ast> for GatedCollector<'_> {
         let attrs: &[syn::Attribute] = match stmt {
             syn::Stmt::Macro(stmt) => &stmt.attrs,
             syn::Stmt::Local(stmt) => &stmt.attrs,
-            syn::Stmt::Expr(syn::Expr::Block(block), _) => &block.attrs,
-            _ => &[],
+            syn::Stmt::Expr(expr, _) => expr_attrs(expr),
+            syn::Stmt::Item(_) => &[],
         };
         self.scoped(attrs, stmt, |this| syn::visit::visit_stmt(this, stmt));
     }

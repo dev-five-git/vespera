@@ -162,7 +162,7 @@ fn gated_route_statements(
 /// predicate that does not re-parse is a `compile_error!` (`Err`), never
 /// dropped: an empty `all()` is true, so the item would compile in under every
 /// cfg.
-fn parse_cfg_predicates(
+pub fn parse_cfg_predicates(
     cfg: &[String],
 ) -> Result<Vec<proc_macro2::TokenStream>, proc_macro2::TokenStream> {
     cfg.iter()

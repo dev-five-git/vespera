@@ -17,8 +17,10 @@
 //!
 //! Methodology: each iteration runs `cargo clean -p <target>` and removes
 //! `<target-dir>/vespera` and `<target-dir>/<triple>/vespera` (the route
-//! cache) to force a full re-expansion, then `cargo rustc … -- -Z time-passes` and parses the pass
-//! time. Compile time has only *positive* noise (a busy machine only ever
+//! cache) to force a full re-expansion, then `cargo rustc … -- -Z time-passes`
+//! and parses the pass time. With `VESPERA_TARGET_DIR` set, only
+//! `<dir>/vespera` is removed (no triple directory: the override names the
+//! cache's directory directly). Compile time has only *positive* noise (a busy machine only ever
 //! adds time), so `min` is the robust point estimate; `median`/`mean`/`sd`
 //! are reported too. Gross outliers (> 3x median, e.g. AV/FS hiccups) are
 //! dropped before stats.
