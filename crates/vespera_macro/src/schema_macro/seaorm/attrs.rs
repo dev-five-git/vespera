@@ -505,6 +505,7 @@ mod tests {
     #[case::current_timestamp(r#"#[sea_orm(default_expr = "Expr::current_timestamp()")]"#, None)]
     #[case::cust_two_args(r#"#[sea_orm(default_expr = "Expr::cust(\"NOW()\", 1)")]"#, None)]
     #[case::not_a_call(r#"#[sea_orm(default_expr = "NOW()")]"#, None)]
+    #[case::not_a_call_expr(r#"#[sea_orm(default_expr = "CURRENT_TIMESTAMP")]"#, None)]
     #[case::not_a_string(r"#[sea_orm(default_expr = 1)]", None)]
     #[case::not_a_path_call(r#"#[sea_orm(default_expr = "(f)(\"NOW()\")")]"#, None)]
     #[case::bare_default_expr(r"#[sea_orm(default_expr)]", None)]
