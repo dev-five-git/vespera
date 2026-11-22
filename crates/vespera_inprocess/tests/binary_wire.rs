@@ -85,8 +85,10 @@ async fn multi_header() -> Response {
     (headers, "ok").into_response()
 }
 
-/// Response headers inserted in REVERSE name order: `HeaderMap` iterates in
-/// insertion order, so only the wire writer's sort puts them in key order.
+/// Response headers inserted in REVERSE name order. `HeaderMap`'s iteration
+/// order is unspecified, so the key order on the wire is meant to come from
+/// the writer's sort (see the determinism test for what the reverse
+/// insertion does and does not prove).
 async fn unsorted_headers() -> Response {
     ([("x-zeta", "3"), ("x-mid", "2"), ("x-alpha", "1")], "ok").into_response()
 }
@@ -349,8 +351,10 @@ fn wire_response_bytes_are_deterministic_across_dispatches() {
     // (golden-file / SHA-comparison safety).  `http::HeaderMap` documents an
     // arbitrary but consistent iteration order, so repeating a dispatch
     // yields the same bytes even without the writer's key sort.  The handler
-    // inserts its headers in reverse name order, which exercises the writer's
-    // sort: the raw header JSON must still list them sorted.
+    // inserts its headers in reverse name order; the raw header JSON must
+    // still list them sorted.  That reverse insertion only exercises the
+    // writer's sort while `HeaderMap` happens to iterate in insertion order,
+    // so this is a regression check, not a proof of the sort on its own.
     install_router();
     let runtime = Builder::new_current_thread()
         .enable_all()

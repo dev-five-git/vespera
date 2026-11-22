@@ -30,7 +30,8 @@ use vespera_inprocess::{
     DirectWriteResult, RequestChunk, StreamOutcome, dispatch_bidirectional_streaming_closing,
     dispatch_bidirectional_streaming_with_header,
     dispatch_bidirectional_streaming_with_header_closing, dispatch_into_async,
-    dispatch_streaming_async, dispatch_streaming_with_header_async, register_app_named,
+    dispatch_streaming_async, dispatch_streaming_with_header_async,
+    effective_streaming_channel_capacity, register_app_named,
 };
 
 #[path = "streaming_with_header/close_hook_and_body_errors.rs"]
@@ -660,12 +661,15 @@ async fn bidirectional_with_header_invalid_method_returns_405() {
 async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
     // The handler reads one frame (starting the producer) and returns,
     // dropping the request body while the producer still has chunks: the
-    // bounded 16-slot mpsc fills up, the producer's blocked send gives up
-    // once the receiver is gone, and the producer takes the `break` branch.  Run
+    // bounded mpsc fills up, the producer's blocked send gives up once the
+    // receiver is gone, and the producer takes the `break` branch.  Run
     // inside `tokio::spawn` so no pull happens inline on a `block_on`
-    // thread: every pull is the producer's.  At least one pull ran (the
-    // frame the handler read) and the counter ends short of the
-    // 1000-chunk source — proving the early break ran.
+    // thread: every pull is the producer's.  The pulls that can happen before
+    // that break are: the frame the handler read, one frame per channel slot
+    // and the one frame the producer pulled and could not send, so the
+    // counter is bounded by the channel capacity plus 2.  A producer that
+    // ignored the closed receiver would pull all 1000 chunks and fail that
+    // bound.
     install_router();
     let wire = encode_wire(
         "POST",
@@ -707,10 +711,11 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
 
     let (header_json, _) = decode_wire(&single_header(&header_buf));
     assert_eq!(header_json["status"].as_u64(), Some(200));
-    let pulled = *counter.lock().unwrap();
+    let pulled = usize::try_from(*counter.lock().unwrap()).unwrap();
+    let bound = effective_streaming_channel_capacity() + 2;
     assert!(
-        (1..1000).contains(&pulled),
-        "producer should have aborted early (got {pulled} of 1000 pulls before break)"
+        (1..=bound).contains(&pulled),
+        "producer should have broken out after at most {bound} pulls (got {pulled})"
     );
 }
 

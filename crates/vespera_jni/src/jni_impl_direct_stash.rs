@@ -586,6 +586,13 @@ mod tests {
         let resumed = put(None, pending());
         let newer = put(None, pending());
         let _ = put(Some(resumed), stash_take(resumed).expect("live"));
+        // Pin the stash times instead of relying on `Instant::now()` ordering:
+        // `newer` is stashed before the re-stash of `resumed`, so on a clock
+        // tie the token order must not decide the eviction.
+        let earlier = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("monotonic clock far enough from its origin");
+        lock_stash().entries.get_mut(&newer).expect("stashed").0 = earlier;
         for _ in 0..MAX_STASHED - 1 {
             let _ = put(None, pending());
         }

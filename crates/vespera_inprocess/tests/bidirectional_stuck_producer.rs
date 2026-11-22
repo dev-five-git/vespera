@@ -139,6 +139,10 @@ async fn a_producer_unblocked_after_the_dispatch_finished_never_pulls_again() {
     let pulls = Arc::new(AtomicUsize::new(0));
     let pulls_in_source = Arc::clone(&pulls);
     let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+    // The close hook's own signal: the parked pull must be released by the
+    // hook, never by its own timeout, so the hook's run is checked on its own.
+    let hook_ran = Arc::new(AtomicBool::new(false));
+    let hook_flag = Arc::clone(&hook_ran);
     let mut response = Vec::new();
     let header = dispatch_bidirectional_streaming_closing(
         encode("/park1"),
@@ -146,8 +150,9 @@ async fn a_producer_unblocked_after_the_dispatch_finished_never_pulls_again() {
             let _keep = &flag;
             if pulls_in_source.fetch_add(1, Ordering::SeqCst) == 1 {
                 second_pull_started().notify_one();
-                // Parked until the request source is closed.
-                let _ = closed_rx.recv_timeout(Duration::from_secs(5));
+                // Parked until the close hook runs (the 30 s is only a
+                // backstop, far past the hook deadline below).
+                let _ = closed_rx.recv_timeout(Duration::from_secs(30));
             }
             RequestChunk::Data(b"x".to_vec())
         },
@@ -156,12 +161,21 @@ async fn a_producer_unblocked_after_the_dispatch_finished_never_pulls_again() {
             ControlFlow::Continue(())
         },
         move || {
+            hook_flag.store(true, Ordering::SeqCst);
             let _ = closed_tx.send(());
         },
     )
     .await;
     assert_eq!(status(&header), 200);
     assert_eq!(response, b"parked");
+    let hook_deadline = Instant::now() + Duration::from_secs(2);
+    while !hook_ran.load(Ordering::SeqCst) && Instant::now() < hook_deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        hook_ran.load(Ordering::SeqCst),
+        "the close hook ran within 2 s of the dispatch finishing"
+    );
     let deadline = Instant::now() + Duration::from_secs(5);
     while !dropped.load(Ordering::SeqCst) && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(5)).await;
