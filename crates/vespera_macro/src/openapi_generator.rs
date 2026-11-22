@@ -282,6 +282,36 @@ pub fn validate_security_references(
         .map_err(|error| fail("top-level `security`", &error))
 }
 
+/// The operation-level `security` of every operation in `paths`, checked like
+/// [`validate_security_references`]: a name absent from `schemes` or a scope
+/// its `oauth2` scheme does not declare is an error, named `METHOD path`.
+///
+/// Run over the final document's paths, so a merged child's own operations
+/// (round-40 M5-01) are checked against the merged `securitySchemes`; the
+/// app's own routes pass here, having passed the route check first.
+pub fn validate_operation_security(
+    paths: &BTreeMap<String, vespera_core::route::PathItem>,
+    schemes: &BTreeMap<String, SecurityScheme>,
+) -> syn::Result<()> {
+    for (path, item) in paths {
+        for (method, operation) in item.operations() {
+            let user = format!("operation `{method} {path}`");
+            check_requirements(
+                operation.security.as_deref().unwrap_or_default(),
+                schemes,
+                true,
+            )
+            .map_err(|error| {
+                syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    describe_requirement_error(&error, &user, schemes),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// The document's `tags[]`: the declared `tags = [...]` first, in declaration
 /// order (OpenAPI tools render tags in array order) and with or without a
 /// description, then every other tag a route uses, sorted by name.

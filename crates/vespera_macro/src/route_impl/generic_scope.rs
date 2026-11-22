@@ -1,8 +1,12 @@
-//! Per-entry filter for the schema and payload assertions a generic handler
-//! emits beside itself. Only an entry naming one of the handler's own type,
-//! const or lifetime parameters is out of scope there and skipped; every other
-//! entry (a concrete `NotFound`, a payload `Other`) is still asserted, so a
-//! typo or a type without `#[derive(Schema)]` keeps its compile error.
+//! Per-entry filter for the payload assertions a generic handler emits beside
+//! itself. A `Validated<E<U>>` / `ValidatedWith<C, E<U>>` payload naming one of
+//! the handler's own type, const or lifetime parameters is out of scope there
+//! and skipped; every other payload (a concrete `Other`) is still asserted, so
+//! a type without `#[derive(Schema)]` keeps its compile error.
+//!
+//! `responses` entries are not filtered: one naming a handler parameter is a
+//! spanned error (`typed_response_assertions`, round 39), and every other entry
+//! (a concrete `NotFound`) gets its schema assertion (round-40 MR3-L1).
 
 use proc_macro2::{TokenStream, TokenTree};
 use quote::ToTokens;

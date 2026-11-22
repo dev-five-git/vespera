@@ -5,7 +5,7 @@ use crate::{
     metadata::CollectedMetadata,
     openapi_generator::{
         OpenApiSecurity, find_duplicate_operation_id, try_generate_openapi_doc_with_metadata,
-        validate_security_references,
+        validate_operation_security, validate_security_references,
     },
     route_impl::StoredRouteInfo,
     router_codegen::ProcessedVesperaInput,
@@ -174,6 +174,8 @@ pub fn generate_and_write_openapi(
             .and_then(|components| components.security_schemes.as_ref())
             .unwrap_or(&empty);
         validate_security_references(metadata, merged_schemes, input.security.as_deref())?;
+        // A merged child's own operations (round-40 M5-01) are in the paths too.
+        validate_operation_security(&openapi_doc.paths, merged_schemes)?;
     }
 
     // NOTE on F-01: an earlier audit suggested serialising the
@@ -230,6 +232,9 @@ fn validate_security_without_doc(
         return Ok(());
     };
     let mut schemes = own.clone();
+    // Each usable child's paths: their operations are checked against the
+    // final schemes below, once every child has contributed its own (M5-01).
+    let mut child_paths = Vec::new();
     for merge_path in &input.merge {
         let Some((_, spec_file)) = merge_specs.spec_file_for(merge_path) else {
             continue;
@@ -244,9 +249,14 @@ fn validate_security_without_doc(
             for (name, scheme) in child_schemes {
                 schemes.entry(name).or_insert(scheme);
             }
+            child_paths.push(child.paths);
         }
     }
-    validate_security_references(metadata, &schemes, input.security.as_deref())
+    validate_security_references(metadata, &schemes, input.security.as_deref())?;
+    for paths in &child_paths {
+        validate_operation_security(paths, &schemes)?;
+    }
+    Ok(())
 }
 
 /// Write cached OpenAPI spec to output files if they are stale or missing.
@@ -439,3 +449,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_info;
+
+#[cfg(test)]
+mod tests_security;

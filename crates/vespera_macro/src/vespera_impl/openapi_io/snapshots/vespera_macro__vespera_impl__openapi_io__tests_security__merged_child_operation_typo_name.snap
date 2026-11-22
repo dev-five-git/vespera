@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/vespera_impl/openapi_io/tests_security.rs
+expression: error.to_string()
+---
+operation `GET /child` references unknown security scheme `childAuht`; declared in `vespera!(security_schemes = [...])`: `childAuth`, `childOauth`, `parentAuth`
