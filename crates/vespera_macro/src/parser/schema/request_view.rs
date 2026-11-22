@@ -66,7 +66,6 @@
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
-    ops::Deref,
     sync::Arc,
 };
 
@@ -98,59 +97,6 @@ fn bare_fallback(key: &str) -> Option<&str> {
     let (module, bare) = key.rsplit_once("::")?;
     let root = module.split("::").next()?;
     (!is_external_crate_root(root)).then_some(bare)
-}
-
-/// The input components of the documented types.
-///
-/// `names` maps a component name (and a Rust-ident alias of a renamed schema)
-/// to its input component name, for every type whose request view differs.
-/// `owners` is the reverse map, input component name → the component it views:
-/// only a component owns its input, never an alias of another type that
-/// happens to sort first.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct InputMap {
-    names: BTreeMap<String, String>,
-    owners: BTreeMap<String, String>,
-}
-
-impl Deref for InputMap {
-    type Target = BTreeMap<String, String>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.names
-    }
-}
-
-impl InputMap {
-    /// This map without the components whose input `drop` names (owners
-    /// included, so the remaining inputs keep their components).
-    pub fn without_inputs(&self, drop: impl Fn(&String) -> bool) -> Self {
-        Self {
-            names: self
-                .names
-                .iter()
-                .filter(|(_, input)| !drop(input))
-                .map(|(component, input)| (component.clone(), input.clone()))
-                .collect(),
-            owners: self
-                .owners
-                .iter()
-                .filter(|(input, _)| !drop(input))
-                .map(|(input, component)| (input.clone(), component.clone()))
-                .collect(),
-        }
-    }
-}
-
-impl From<BTreeMap<String, String>> for InputMap {
-    /// Without a computed owner map, an input is owned by its smallest name.
-    fn from(names: BTreeMap<String, String>) -> Self {
-        let mut owners = BTreeMap::new();
-        for (name, input) in &names {
-            owners.entry(input.clone()).or_insert_with(|| name.clone());
-        }
-        Self { names, owners }
-    }
 }
 
 /// [`InputMap`] shared between the threads that build schemas.
@@ -221,8 +167,11 @@ pub fn mentions_input<'a>(types: impl IntoIterator<Item = &'a syn::Type>) -> boo
     INPUT_NAMES.with(|names| {
         let names = names.borrow();
         idents.iter().any(|ident| {
+            // A registered key decides alone; the bare ident stands in only for
+            // a module-scoped key nothing registers (as `owner` does).
             names.contains_key(ident)
-                || bare_fallback(ident).is_some_and(|bare| names.contains_key(bare))
+                || (!names.registered.contains(ident)
+                    && bare_fallback(ident).is_some_and(|bare| names.contains_key(bare)))
         })
     })
 }
@@ -326,7 +275,12 @@ pub fn compute_input_names(sources: &[ViewSource<'_>], taken: &BTreeSet<String>)
             }
         }
     }
-    Arc::new(InputMap { names, owners })
+    let registered = component_of.keys().map(|key| (*key).to_string()).collect();
+    Arc::new(InputMap {
+        names,
+        owners,
+        registered,
+    })
 }
 
 /// `{name}Input`, or `{name}Input2`, `{name}Input3`, ... when taken.
@@ -988,6 +942,8 @@ fn mixes_unit_and_data(item: &syn::ItemEnum) -> bool {
 
 mod idents;
 use idents::{collect_idents, referenced_idents};
+mod input_map;
+pub use input_map::InputMap;
 
 #[cfg(test)]
 mod tests;

@@ -150,6 +150,7 @@ fn bound_of_projection<'a>(
                 .iter()
                 .filter(|bound| declares_projection(bound, projection));
             let first = declaring.next();
+            let declared = first.is_some();
             if let (Some(bound), None) = (first, declaring.next()) {
                 return Ok(Some(bound));
             }
@@ -158,12 +159,18 @@ fn bound_of_projection<'a>(
                 .map(|bound| bound.to_token_stream().to_string())
                 .collect::<Vec<_>>()
                 .join(" + ");
+            // Several bounds declare it, or none does: the qualified form is
+            // asked for either way, but only the first case is ambiguous.
+            let problem = if declared {
+                format!("`{param}::{projection}` is ambiguous")
+            } else {
+                format!("no bound of `{param}` declares `{projection}`")
+            };
             Err(syn::Error::new(
                 projection.span(),
                 format!(
-                    "`{param}::{projection}` is ambiguous: `{param}` is bounded by \
-                     `{traits}`, so write the qualified form \
-                     `<{param} as Trait>::{projection}` naming the trait"
+                    "{problem}: `{param}` is bounded by `{traits}`, so write the \
+                     qualified form `<{param} as Trait>::{projection}` naming the trait"
                 ),
             ))
         }
@@ -358,6 +365,12 @@ impl Subst<'_> {
                             let mut binding = binding.clone();
                             binding.ty = self.ty(&binding.ty);
                             syn::GenericArgument::AssocType(binding)
+                        }
+                        // `Item: Into<T>`: the bounds are walked like a trait object's.
+                        syn::GenericArgument::Constraint(constraint) => {
+                            let mut constraint = constraint.clone();
+                            constraint.bounds = self.bounds(&constraint.bounds);
+                            syn::GenericArgument::Constraint(constraint)
                         }
                         other => other.clone(),
                     })
@@ -620,11 +633,20 @@ mod tests {
     /// declare, is an error asking for the qualified form, spanned at the
     /// projection; the projection itself is not guessed at.
     #[rstest]
-    #[case::no_bound_declares("struct Wrap<T: Clone + Deref> { x: T::Out }", "T::Out")]
-    #[case::several_declare("struct Wrap<T: Iterator + IntoIterator> { x: T::Item }", "T::Item")]
+    #[case::no_bound_declares(
+        "struct Wrap<T: Clone + Deref> { x: T::Out }",
+        "T::Out",
+        "no bound of `T` declares `Out`"
+    )]
+    #[case::several_declare(
+        "struct Wrap<T: Iterator + IntoIterator> { x: T::Item }",
+        "T::Item",
+        "`T::Item` is ambiguous"
+    )]
     fn ambiguous_projection_asks_for_the_qualified_form(
         #[case] src: &str,
         #[case] projection: &str,
+        #[case] problem: &str,
     ) {
         let item: syn::ItemStruct = syn::parse_str(src).unwrap();
         let ty: Type = syn::parse_str(projection).unwrap();
@@ -640,7 +662,7 @@ mod tests {
         let error = error.expect(projection).to_string();
         let name = projection.rsplit("::").next().unwrap();
         assert!(
-            error.contains("ambiguous") && error.contains(&format!("<T as Trait>::{name}")),
+            error.contains(problem) && error.contains(&format!("<T as Trait>::{name}")),
             "{error}"
         );
     }
@@ -705,6 +727,8 @@ mod tests {
     // Trait object and `impl Trait`: the bounds' arguments
     #[case("Box<dyn Iterator<Item = T>>", &["T"], &["String"], "Box < dyn Iterator < Item = String > >")]
     #[case("impl Iterator<Item = T>", &["T"], &["String"], "impl Iterator < Item = String >")]
+    // An associated-type bound (`Item: Into<T>`) of a trait object's argument
+    #[case("Box<dyn Source<Item: Into<T>>>", &["T"], &["u8"], "Box < dyn Source < Item : Into < u8 > > >")]
     fn test_substitute_type_comprehensive(
         #[case] input: &str,
         #[case] params: &[&str],

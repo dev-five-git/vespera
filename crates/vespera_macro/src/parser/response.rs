@@ -4,7 +4,9 @@ use syn::{ReturnType, Type};
 use vespera_core::route::{MediaType, Response};
 use vespera_core::schema::{Schema, SchemaRef};
 
-use super::schema::{is_builtin_openapi_type, lookup_key, parse_type_to_schema_ref};
+use super::schema::{
+    is_builtin_openapi_type, is_external_crate_root, lookup_key, parse_type_to_schema_ref,
+};
 use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
 
 /// Unwrap Json<T> to get T
@@ -70,11 +72,12 @@ pub(super) struct Shadows<'a> {
 
 impl Shadows<'_> {
     /// Whether `ty` names a type this crate defines (a known `Schema` type or a
-    /// struct definition). A bare or `crate` / `self` / `super` path counts by
-    /// its last segment. Any other module-qualified path (`axum::response::
-    /// Redirect`, `bytes::Bytes`) is this crate's type only under its
-    /// module-scoped key (`models::Bytes`, a module the crate declares); a path
-    /// rooted at another module is the external type.
+    /// struct definition). A module-qualified path is this crate's type under
+    /// its registered module-scoped key (`models::Bytes`). Otherwise it counts
+    /// by its last segment, unless its root is an external crate (`axum::
+    /// response::Redirect`, `bytes::Bytes` stay external). So an unregistered
+    /// path through a crate module (`api::Response`, a module re-exporting
+    /// `dto::Response`) is the crate's type.
     pub(super) fn names_user_type(self, ty: &Type) -> bool {
         let Type::Path(type_path) = ty else {
             return false;
@@ -82,16 +85,18 @@ impl Shadows<'_> {
         let names_crate_type = |name: &str| {
             self.known_schemas.contains(name) || self.struct_definitions.contains_key(name)
         };
-        let segments = &type_path.path.segments;
-        let crate_relative = segments.first().is_some_and(|first| {
-            matches!(first.ident.to_string().as_str(), "crate" | "self" | "super")
-        });
-        if segments.len() > 1 && !crate_relative {
-            return lookup_key(&type_path.path).is_some_and(|key| names_crate_type(&key));
+        if lookup_key(&type_path.path).is_some_and(|key| names_crate_type(&key)) {
+            return true;
         }
-        segments
-            .last()
-            .is_some_and(|segment| names_crate_type(&segment.ident.to_string()))
+        let segments = &type_path.path.segments;
+        let external_root = segments.len() > 1
+            && segments
+                .first()
+                .is_some_and(|first| is_external_crate_root(&first.ident.to_string()));
+        !external_root
+            && segments
+                .last()
+                .is_some_and(|segment| names_crate_type(&segment.ident.to_string()))
     }
 }
 
@@ -584,5 +589,7 @@ fn merge_error_bodies(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_names;
 #[cfg(test)]
 mod tests_parts;

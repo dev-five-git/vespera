@@ -89,3 +89,48 @@ fn module_segments_are_not_referenced_idents(#[case] src: &str, #[case] expected
         expected
     );
 }
+
+/// Round 40 (P2-L1): a type named by a module-scoped key that is registered
+/// decides by that key alone. `b::Foo` (no input view) names no input even
+/// though the bare `Foo` is `a::Foo`'s renamed component with one, so the
+/// bare-ident fallback must not reach it. An unregistered scope still falls
+/// back to the bare ident.
+#[test]
+fn registered_scoped_key_decides_before_the_bare_ident() {
+    let items: [syn::Item; 2] = [
+        syn::parse_quote!(
+            struct Foo {
+                #[serde(default)]
+                a: u8,
+            }
+        ),
+        syn::parse_quote!(
+            struct Foo {
+                b: u8,
+            }
+        ),
+    ];
+    let sources = [
+        ViewSource {
+            name: "A",
+            rust_ident: Some("Foo"),
+            scoped_keys: vec!["a::Foo"],
+            item: &items[0],
+        },
+        ViewSource {
+            name: "B",
+            rust_ident: Some("Foo"),
+            scoped_keys: vec!["b::Foo"],
+            item: &items[1],
+        },
+    ];
+    install(compute_input_names(&sources, &BTreeSet::new()));
+
+    let registered_without_input: [syn::Type; 1] = [syn::parse_quote!(b::Foo)];
+    let registered_with_input: [syn::Type; 1] = [syn::parse_quote!(a::Foo)];
+    let unregistered_scope: [syn::Type; 1] = [syn::parse_quote!(c::Foo)];
+    assert!(!mentions_input(&registered_without_input));
+    assert!(mentions_input(&registered_with_input));
+    assert!(mentions_input(&unregistered_scope));
+    install(Arc::default());
+}
