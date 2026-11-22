@@ -332,9 +332,9 @@ fn build_uri(path: &str, query: &str) -> Result<Uri, (u16, String)> {
     parsed.map_err(invalid_request_err)
 }
 
-/// Shared inner request build for [`build_request_from_bytes`] (the buffered /
-/// response-streaming paths) and [`dispatch_and_split`] (the wire / streaming
-/// / direct-write paths).  Both call sites used to inline the same
+/// Shared inner request build for [`build_request_from_bytes`] (the buffered
+/// [`dispatch_parts`] path) and [`dispatch_and_split`] (the response-streaming
+/// / wire / direct-write paths).  Both call sites used to inline the same
 /// `Request::new(body)` → `method_mut()` / `uri_mut()` → `headers.reserve` →
 /// single-pass header insert with case-insensitive `Content-Type` detection →
 /// default-`application/json` sequence; this helper carries that sequence once.
@@ -438,10 +438,9 @@ pub fn declares_empty_body<'h>(headers: impl Iterator<Item = (&'h str, &'h str)>
     seen
 }
 
-/// Build the axum request shared by the buffered ([`dispatch_parts`]) and
-/// response-streaming paths — both take a
-/// fully-buffered [`Bytes`] body and default a missing `Content-Type` when
-/// the body is non-empty.  Parses the method (`Err((405, _))` on failure) and
+/// Build the axum request for the buffered [`dispatch_parts`] path, which
+/// takes a fully-buffered [`Bytes`] body and defaults a missing
+/// `Content-Type` when the body is non-empty.  Parses the method (`Err((405, _))` on failure) and
 /// the URI (`Err((400, _))` on failure), then delegates the in-place
 /// `Request` construction to [`build_axum_request_inner`].  `#[inline]` so
 /// the two call sites keep inlined codegen.
