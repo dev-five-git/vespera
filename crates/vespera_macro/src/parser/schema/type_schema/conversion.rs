@@ -170,8 +170,10 @@ pub(in crate::parser::schema) fn is_external_crate_path(path: &syn::Path) -> boo
 
 /// Whether `root` (the first segment of a module-qualified path) names one of
 /// the external crates [`is_external_crate_path`] recognizes. Also used on
-/// string keys (`serde_json::Value`), where no `syn::Path` exists.
-pub(in crate::parser::schema) fn is_external_crate_root(root: &str) -> bool {
+/// string keys (`serde_json::Value`), where no `syn::Path` exists. A crate
+/// module re-exporting a type through an unlisted root is read as this
+/// crate's type (the root cannot be told from an external crate by syntax).
+pub(in crate::parser) fn is_external_crate_root(root: &str) -> bool {
     matches!(
         root,
         "std"
@@ -185,6 +187,8 @@ pub(in crate::parser::schema) fn is_external_crate_root(root: &str) -> bool {
             | "uuid"
             | "url"
             | "http"
+            | "hyper"
+            | "bytes"
             | "axum"
             | "axum_extra"
             | "headers"
@@ -590,31 +594,28 @@ fn parse_type_impl(
                 crate::parser::schema::definition_key(path, |key| known_schemas.contains(key))
                     .filter(|key| key.contains("::"))
             };
-            // For paths like `module::Schema`, try to find the schema name
-            // by checking if there's a schema named `ModuleSchema` or `ModuleNameSchema`,
-            // then the module-scoped key (a renamed `Schema` names no `ModuleSchema`).
-            let resolved_name = if type_name == "Schema" && path.segments.len() > 1 {
-                // Get the parent module name (e.g., "user" from "crate::models::user::Schema")
-                let parent_segment = &path.segments[path.segments.len() - 2];
-                let parent_name = parent_segment.ident.unraw().to_string();
-
-                // Try PascalCase version: "user" -> "UserSchema"
-                // Rust identifiers are guaranteed non-empty
-                let pascal_name = format!("{}Schema", capitalize_first(&parent_name));
-
-                if known_schemas.contains(pascal_name.as_str()) {
-                    pascal_name
-                } else {
-                    // Try lowercase version: "userSchema"
-                    let lower_name = format!("{parent_name}Schema");
-                    if known_schemas.contains(lower_name.as_str()) {
-                        lower_name
-                    } else {
-                        scoped_key().unwrap_or(type_name)
-                    }
+            // `module::Schema` names its module-scoped key when one is registered:
+            // a renamed `Schema` may share its name with an unrelated component.
+            // Only without a registered key is the convention tried, a schema
+            // named `ModuleSchema` (or `moduleSchema`).
+            let resolved_name = match scoped_key() {
+                Some(key) => key,
+                None if type_name == "Schema" && path.segments.len() > 1 => {
+                    // The parent module name (e.g., "user" from "crate::models::user::Schema")
+                    let parent_name = path.segments[path.segments.len() - 2]
+                        .ident
+                        .unraw()
+                        .to_string();
+                    // "user" -> "UserSchema", then "userSchema"
+                    [
+                        format!("{}Schema", capitalize_first(&parent_name)),
+                        format!("{parent_name}Schema"),
+                    ]
+                    .into_iter()
+                    .find(|name| known_schemas.contains(name.as_str()))
+                    .unwrap_or(type_name)
                 }
-            } else {
-                scoped_key().unwrap_or(type_name)
+                None => type_name,
             };
 
             if known_schemas.contains(resolved_name.as_str()) {
@@ -744,9 +745,9 @@ fn parse_type_impl(
                             // A request-view instantiation differs from the
                             // response one when it names an input type: the
                             // `.Input` suffix keeps `Tree<User>` apart from
-                            // `Tree<UserInput>`. A `#[schema(name)]` value may
-                            // itself end in `.Input`, so the suffix separates
-                            // names by convention, not by construction.
+                            // `Tree<UserInput>`. The generator rejects a component
+                            // name ending in `.Input` (`openapi_generator.rs`), so
+                            // the suffix never collides with a user name.
                             if request_view::in_request_view()
                                 && (request_view::has_input(&base)
                                     || request_view::mentions_input(concrete_types.iter().copied())

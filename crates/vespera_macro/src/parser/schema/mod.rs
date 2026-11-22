@@ -56,6 +56,7 @@ pub use serde_attrs::{
     rename_field, strip_raw_prefix_owned,
 };
 pub use struct_schema::{apply_field_rules, parse_struct_to_schema, single_emitted_field};
+pub(in crate::parser) use type_schema::is_external_crate_root;
 // Re-export for internal use within the parser module. `parse_type_to_schema_ref`
 // is reached directly via the `type_schema` submodule path where needed.
 pub use type_schema::generic_instances;

@@ -117,7 +117,7 @@ pub(super) fn variant_keys(variant: &syn::Variant, rename_all: Option<&str>) -> 
 ///
 /// `#[derive(Schema)]` cannot see derives listed in its own `#[derive(..)]`
 /// attribute, so it copies them from the source file into the stored
-/// definition (see `schema_impl::serde_repr_derives`).
+/// definition (see `schema_impl::serde_repr::with_serde_repr_derives`).
 pub fn derives_serde_repr(attrs: &[syn::Attribute], side: SerdeSide) -> bool {
     let wanted = match side {
         SerdeSide::Serialize => "Serialize_repr",

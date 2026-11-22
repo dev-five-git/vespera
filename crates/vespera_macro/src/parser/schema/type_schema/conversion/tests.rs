@@ -936,11 +936,13 @@ fn module_schema_path_names_its_component(#[case] ty_src: &str) {
 /// `models/user.rs` renames its `Schema` to `UserDto` (`schema_type!`), so the
 /// `Schema` of `models/post.rs` (the bare `Schema` component) is another
 /// module's. `crate::models::user::Schema` names `UserDto` through its
-/// module-scoped key, never the bare `Schema`, whether `PostDto` or `Schema`
-/// is the other component.
+/// module-scoped key, never the bare `Schema` nor a conventional `UserSchema`
+/// (round 40), whichever of them is another component.
 #[rstest::rstest]
 #[case::bare_schema_is_another_module("Schema")]
 #[case::bare_schema_unknown("PostDto")]
+#[case::pascal_guess_is_another_component("UserSchema")]
+#[case::lower_guess_is_another_component("userSchema")]
 fn module_schema_path_names_its_renamed_component(#[case] other: &str) {
     let known = HashSet::from([
         "crate::models::user::Schema",
