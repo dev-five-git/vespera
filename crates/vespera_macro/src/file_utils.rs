@@ -98,11 +98,17 @@ pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
 /// previously the folder was walked twice and every file paid an
 /// extra `fs::metadata` syscall on top of the directory-entry data
 /// the OS already returned.
+///
+/// The result is sorted by path (round-40 MR0-L2): `read_dir` order differs
+/// between filesystems, and the route order (`metadata.routes`, the duplicate
+/// route and operationId diagnostics that name the "earlier" handler) follows
+/// this list.
 pub fn collect_files_with_mtimes(folder_path: &Path) -> io::Result<Vec<(PathBuf, u64)>> {
     let mut files = Vec::new();
     let mut ancestors = std::collections::HashSet::new();
     ancestors.insert(canonical_dir(folder_path));
     collect_with_mtimes_into(folder_path, &mut files, &mut ancestors)?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(files)
 }
 
@@ -448,6 +454,28 @@ mod tests {
         let nonexistent = PathBuf::from("/nonexistent/path/that/does/not/exist");
         let result = collect_files(&nonexistent);
         assert!(result.is_err());
+    }
+
+    /// The scan comes back sorted by path (round-40 MR0-L2), whatever order
+    /// the directory listing gives. NTFS lists alphabetically, so on Windows
+    /// this guards the contract rather than reproducing a directory-order gap.
+    #[test]
+    fn collect_files_with_mtimes_is_sorted_by_path() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        for name in ["zeta.rs", "mid/beta.rs", "alpha.rs", "mid/aaa.rs"] {
+            let file = temp_dir.path().join(name);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, "").unwrap();
+        }
+        let paths: Vec<PathBuf> = collect_files_with_mtimes(temp_dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(paths.len(), 4);
+        assert_eq!(paths, sorted);
     }
 
     /// Symlinked files and directories are followed (like rustc's module

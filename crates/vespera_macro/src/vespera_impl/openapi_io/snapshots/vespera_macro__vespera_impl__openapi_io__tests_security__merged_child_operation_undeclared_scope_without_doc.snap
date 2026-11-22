@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/vespera_impl/openapi_io/tests_security.rs
+expression: error.to_string()
+---
+operation `GET /child` requires scope `write:x`, which no flow of oauth2 security scheme `childOauth` declares; declared scopes: `read:x`

@@ -80,3 +80,24 @@ fn const_generic_handler_rejects_an_entry_naming_its_const_param() {
     let error = process_route_attribute(quote!(get, responses = [(400, N)]), item).unwrap_err();
     assert!(error.to_string().contains("dangling `$ref`"), "{error}");
 }
+
+/// A rejected `responses` entry is an error before the route is stored
+/// (round-40 MR3-L3): the IDE view must not keep a `$ref` to the parameter.
+/// The message wraps across lines with `\` continuations, not runs of spaces.
+#[test]
+fn rejected_generic_responses_entry_is_not_stored() {
+    let item = quote!(
+        pub async fn get_rejected_generic_storage<T>() -> String {
+            String::new()
+        }
+    );
+    let error = process_route_attribute(quote!(get, responses = [(404, T)]), item).unwrap_err();
+    assert!(error.to_string().contains("dangling `$ref`"), "{error}");
+    assert!(!error.to_string().contains("          "), "{error}");
+    assert!(
+        !current_crate_routes()
+            .iter()
+            .any(|stored| stored.fn_name == "get_rejected_generic_storage"),
+        "a rejected route must not be stored"
+    );
+}

@@ -283,8 +283,10 @@ pub fn module_table_hash(folder_path: &Path) -> u64 {
 /// file with a `ROUTE_STORAGE` entry is absent from the map). The map is the
 /// `file_cache` argument of `openapi_generator` (fed by
 /// `vespera_impl::openapi_io`) and of
-/// `parser::validate_schema_backed_extractors_with_cache`; both fall back to
-/// the file cache for an absent file, so no file is parsed twice.
+/// `parser::validate_schema_backed_extractors_with_cache`. The validator falls
+/// back to the file cache for an absent file, so that file is not parsed
+/// twice; `openapi_generator` takes an absent route file from `ROUTE_STORAGE`
+/// and its defaults from `SCHEMA_STORAGE` instead (round-40 MR0-L1).
 // Test-only convenience wrapper: `vespera!` / `export_app!` reach the collector
 // through `collect_metadata_from_files` (which reuses the cache's single
 // directory walk), so this folder-walking variant exists purely for the unit

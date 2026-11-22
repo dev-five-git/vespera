@@ -2,7 +2,6 @@
 //! `--test` harness and rust-analyzer expand the same `vespera!`.
 
 use std::fs;
-use std::time::{Duration, SystemTime};
 
 use tempfile::TempDir;
 
@@ -47,8 +46,10 @@ fn served(folder: &str) -> ProcessedVesperaInput {
 }
 
 /// The test harness build generates another spec than the library; it must
-/// never prune the library's `include_str!` target, however old that is
-/// (it is never rewritten while its content is unchanged).
+/// never prune the library's `include_str!` target. The guard is the stem
+/// inequality (asserted below): the grace period of a pruned file runs from
+/// its supersession time in `<stem>.selected`, not from its mtime, so an old
+/// file mtime alone protects nothing and is not set up here.
 #[test]
 fn test_harness_build_never_prunes_the_library_sidecar() {
     let temp_dir = crate_with_routes("#[vespera::route(get)] pub async fn list() {}\n");
@@ -64,13 +65,6 @@ fn test_harness_build_never_prunes_the_library_sidecar() {
             .to_string()
     };
     let library_spec = include_target(&library);
-    let hour_ago = SystemTime::now() - Duration::from_secs(3600);
-    fs::File::options()
-        .write(true)
-        .open(&library_spec)
-        .unwrap()
-        .set_modified(hour_ago)
-        .unwrap();
 
     fs::write(
         temp_dir.path().join("src/routes/users.rs"),

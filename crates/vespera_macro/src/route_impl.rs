@@ -397,6 +397,18 @@ pub fn process_route_attribute(
     )?;
     let fn_sig = &stored_signature(&item_fn.sig, source_file.as_deref());
 
+    // A generic handler's response types may not name its type parameters
+    // (rejected in `typed_response_assertions`); its other types are asserted.
+    // Checked before the route is stored, so a rejected entry never reaches
+    // `ROUTE_STORAGE` (round-40 MR3-L3).
+    let generics = generic_scope::param_names(&item_fn.sig.generics);
+    let assertions = route_args
+        .responses
+        .as_ref()
+        .map(|arr| typed_response_assertions(arr, &generics))
+        .transpose()?
+        .unwrap_or_default();
+
     // Store route metadata for later consumption by vespera!() macro
     let (summary, description) = crate::route::doc_summary_and_description(
         route_args.summary.as_ref().map(syn::LitStr::value),
@@ -446,15 +458,6 @@ pub fn process_route_attribute(
     };
     register_route(stored);
 
-    // A generic handler's response types may not name its type parameters
-    // (rejected in `typed_response_assertions`); its other types are asserted.
-    let generics = generic_scope::param_names(&item_fn.sig.generics);
-    let assertions = route_args
-        .responses
-        .as_ref()
-        .map(|arr| typed_response_assertions(arr, &generics))
-        .transpose()?
-        .unwrap_or_default();
     let mut output = item;
     output.extend(assertions);
     #[cfg(feature = "validation")]
@@ -526,7 +529,9 @@ fn typed_response_assertions(
             if generic_scope::mentions(path, generics) {
                 return Err(syn::Error::new_spanned(
                     path,
-                    "a generic handler's type or const parameter cannot be a `responses` type:                      its schema is only known per instantiation, so the spec would reference                      the parameter as a dangling `$ref`",
+                    "a generic handler's type or const parameter cannot be a `responses` type: \
+                     its schema is only known per instantiation, so the spec would reference \
+                     the parameter as a dangling `$ref`",
                 ));
             }
             Ok(quote::quote_spanned! { syn::spanned::Spanned::span(path) =>

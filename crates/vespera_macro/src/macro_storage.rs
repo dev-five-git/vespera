@@ -336,16 +336,22 @@ fn invocation_arguments(rest: &str) -> &str {
     rest
 }
 
-/// `line` with the contents of its string literals removed (the quotes, and a
-/// raw string's `#`s, stay). Char literals are skipped whole, so the `"` of
-/// `'"'` does not open a string. A literal spanning lines is not seen as one.
+/// `line` as code: the contents of its string literals removed (the quotes,
+/// and a raw string's `#`s, stay), the body of each char literal removed too
+/// (`')'` becomes `''`, so its `)` closes no group) and a `//` line comment
+/// cut off (round-40 MR2-L1). The `"` of `'"'` opens no string, and a string
+/// literal spanning lines is not seen as one.
 fn strip_string_literals(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
     while i < chars.len() {
+        if chars[i] == '/' && chars.get(i + 1) == Some(&'/') {
+            break;
+        }
         if let Some(end) = char_literal_end(&chars, i) {
-            out.extend(&chars[i..end]);
+            out.push('\'');
+            out.push('\'');
             i = end;
         } else if let Some((open_end, close_start, end)) = string_literal_span(&chars, i) {
             out.extend(&chars[i..open_end]);
@@ -631,6 +637,12 @@ mod tests {
     #[case::keyword_return("return!(list);", false)]
     #[case::keyword_in("in!(list);", false)]
     #[case::name_ending_in_keyword("gen_if!(list);", true)]
+    // A char literal's bracket and a `//` comment's bracket do not end the
+    // group (round-40 MR2-L1): the list still lies inside the invocation.
+    #[case::char_paren_before_list("gen!(')', list);", true)]
+    #[case::char_paren_then_call("log!('('); list();", false)]
+    #[case::line_comment_before_list("gen!( // )\n list);", true)]
+    #[case::line_comment_after_group("gen!(x); // list", false)]
     fn may_come_from_macro_names_only_invocation_arguments(
         #[case] line: &str,
         #[case] expected: bool,
@@ -641,9 +653,13 @@ mod tests {
     #[rstest::rstest]
     #[case::plain_string(r#"say("list")"#, r#"say("")"#)]
     #[case::escaped_quote(r#"say("a\"b") x"#, r#"say("") x"#)]
-    #[case::char_quote(r#"let q = '"'; gen!(list);"#, r#"let q = '"'; gen!(list);"#)]
-    #[case::escaped_char(r"let q = '\''; x", r"let q = '\''; x")]
-    #[case::unicode_char(r"let c = '\u{1F600}'; x", r"let c = '\u{1F600}'; x")]
+    #[case::char_quote(r#"let q = '"'; gen!(list);"#, r"let q = ''; gen!(list);")]
+    #[case::escaped_char(r"let q = '\''; x", r"let q = ''; x")]
+    #[case::unicode_char(r"let c = '\u{1F600}'; x", r"let c = ''; x")]
+    #[case::char_paren(r"gen!(')', list);", r"gen!('', list);")]
+    #[case::line_comment(r"gen!(list); // ) x", r"gen!(list); ")]
+    #[case::line_comment_at_start(r#"// say("list")"#, "")]
+    #[case::slashes_in_string(r#"say("//") x"#, r#"say("") x"#)]
     #[case::char_escape_at_end(r"let c = '\", r"let c = '\")]
     #[case::lifetime(r"fn f<'a>(x: &'a str) {}", r"fn f<'a>(x: &'a str) {}")]
     #[case::raw_string_backslash(r#"let p = r"C:\"; x"#, r#"let p = r""; x"#)]

@@ -10,7 +10,10 @@
 //! followed wherever its `#[path]` leads, so a route file loaded through a
 //! `#[path]` declared in a file of another directory (`routes/admin.rs`
 //! declaring `#[path = "helpers/x.rs"] mod x;`) is the module `routes::admin::x`,
-//! whatever its own directory is. Only top-level `mod` declarations count.
+//! whatever its own directory is. Inline `mod name { .. }` blocks are walked
+//! too: their `mod`s load files under `<dir>/name/` (or the `#[path]` of the
+//! block), carrying the block's own `#[cfg(..)]` chain. Only `mod` items of a
+//! declarer's top level and of such blocks count.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -171,18 +174,41 @@ impl Walk<'_> {
         if !self.on_path.insert(declarer.to_path_buf()) {
             return;
         }
+        let dir = declarer.parent().unwrap_or(children_dir);
         for module in declared_mods(declarer) {
-            self.module(declarer, children_dir, &module);
+            self.module(dir, children_dir, &module);
         }
         self.on_path.remove(declarer);
     }
 
-    /// One `mod` of `declarer`: the chain through it is recorded under the
-    /// segments of the route file it loads, then the files it loads are read.
-    /// A `#[path]` that names no route file segment (`mod.rs` of the folder,
-    /// or an empty value) loads the module by its own name, as without one.
-    fn module(&mut self, declarer: &Path, children_dir: &Path, module: &DeclaredMod) {
-        let dir = declarer.parent().unwrap_or(children_dir);
+    /// One `mod` of a declarer whose `mod`s sit in `dir` (a `#[path]` is
+    /// relative to it) and whose by-name children sit in `children_dir`: the
+    /// chain through it is recorded under the segments of the route file it
+    /// loads, then the files it loads are read. A `#[path]` that names no
+    /// route file segment (`mod.rs` of the folder, or an empty value) loads the
+    /// module by its own name, as without one.
+    fn module(&mut self, dir: &Path, children_dir: &Path, module: &DeclaredMod) {
+        if let Some(content) = &module.inline {
+            // An inline block loads no file itself: its `mod`s sit in the
+            // directory it names (`#[path]`, else `<children_dir>/<name>`).
+            let inline_dir = module
+                .path
+                .as_deref()
+                .filter(|path| !path.is_empty())
+                .map_or_else(
+                    || children_dir.join(&module.name),
+                    |path| fold_dots(&dir.join(path)),
+                );
+            self.chain.push(Step {
+                name: module.name.clone(),
+                cfgs: module.cfgs.clone(),
+            });
+            for inner in content {
+                self.module(&inline_dir, &inline_dir, inner);
+            }
+            self.chain.pop();
+            return;
+        }
         let by_path = module
             .path
             .as_deref()
@@ -270,12 +296,14 @@ fn declared_cfg(chains: &[Vec<String>]) -> Vec<String> {
 }
 
 /// One `mod` a declarer makes: the Rust name it is declared under, its
-/// `#[path]` literal (`None` without one) and its `#[cfg(..)]` predicates.
+/// `#[path]` literal (`None` without one), its `#[cfg(..)]` predicates and,
+/// for an inline `mod name { .. }` block, the `mod`s inside it.
 #[derive(Clone)]
 struct DeclaredMod {
     name: String,
     path: Option<String>,
     cfgs: Vec<String>,
+    inline: Option<Vec<Self>>,
 }
 
 /// A declarer's top-level `mod`s (none when the file does not parse).
@@ -288,26 +316,31 @@ fn declared_mods(declarer: &Path) -> Vec<DeclaredMod> {
     file_cache::derived(declarer, |content| {
         Declared(
             syn::parse_file(content)
-                .map(|file| {
-                    file.items
-                        .iter()
-                        .filter_map(|item| match item {
-                            syn::Item::Mod(module) => Some(DeclaredMod {
-                                name: crate::parser::strip_raw_prefix_owned(
-                                    module.ident.to_string(),
-                                ),
-                                path: declared_path(module),
-                                cfgs: cfg_predicates(&module.attrs),
-                            }),
-                            _ => None,
-                        })
-                        .collect()
-                })
+                .map(|file| declared_items(&file.items))
                 .unwrap_or_default(),
         )
     })
     .map(|declared| declared.0.clone())
     .unwrap_or_default()
+}
+
+/// The `mod` items among `items`, each with the `mod`s of its inline block.
+fn declared_items(items: &[syn::Item]) -> Vec<DeclaredMod> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) => Some(DeclaredMod {
+                name: crate::parser::strip_raw_prefix_owned(module.ident.to_string()),
+                path: declared_path(module),
+                cfgs: cfg_predicates(&module.attrs),
+                inline: module
+                    .content
+                    .as_ref()
+                    .map(|(_, content)| declared_items(content)),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The literal `#[path = ".."]` of a `mod` declaration, if it has one.
@@ -386,6 +419,25 @@ mod tests {
     #[case::path_without_stem("#[cfg(unix)] #[path = \"\"] mod admin;", &["admin"], &["unix"])]
     #[case::non_literal_path("#[cfg(unix)] #[path = concat!(\"a\", \".rs\")] mod admin;", &["admin"], &["unix"])]
     #[case::undeclared_module("mod other;", &["admin"], &[])]
+    // A `mod` inside an inline block loads `<dir>/<block>/<name>` (round-40
+    // MR1-L1), under the block's own cfg chain as well as its own.
+    #[case::inline_block_module("mod v1 { #[cfg(unix)] pub mod users; }", &["v1", "users"], &["unix"])]
+    #[case::inline_block_gated("#[cfg(unix)] mod v1 { pub mod users; }", &["v1", "users"], &["unix"])]
+    #[case::nested_inline_blocks(
+        "#[cfg(unix)] mod v1 { #[cfg(feature = \"x\")] mod v2 { #[cfg(test)] pub mod users; } }",
+        &["v1", "v2", "users"],
+        &["unix", "feature = \"x\"", "test"]
+    )]
+    #[case::inline_block_path(
+        "mod v1 { #[cfg(unix)] #[path = \"impl/users.rs\"] pub mod users; }",
+        &["v1", "impl", "users"],
+        &["unix"]
+    )]
+    #[case::inline_block_path_attribute(
+        "#[path = \"base\"] mod v1 { pub mod users; }",
+        &["base", "users"],
+        &[]
+    )]
     // A `#[path]` file in a subdirectory is one module loading both
     // directories (round-33 R33-M1), so its gate applies at the root.
     #[case::path_subdirectory(
