@@ -182,6 +182,39 @@ class VesperaOpenApiMergerTest {
                 .getResponses().get("200").getContent().get("application/json").getSchema().get$ref());
     }
 
+    /**
+     * Only {@code $ref} values and {@code discriminator.mapping} values are pointers;
+     * a description, default or example that merely equals a renamed pointer is data.
+     */
+    @Test
+    void aNonRefStringEqualToARenamedPointerIsLeftUnchanged() {
+        OpenAPI doc = new OpenAPI().components(new Components()
+                .addSchemas("Item", new StringSchema()));
+        String spec = """
+                {
+                  "openapi": "3.1.0",
+                  "info": {"title": "Rust", "version": "1.0.0"},
+                  "paths": {"/note": {"get": {"responses": {"200": {"description": "ok",
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Note"}}}}}}}},
+                  "components": {"schemas": {
+                    "Item": {"type": "object", "properties": {"id": {"type": "integer"}}},
+                    "Note": {"type": "object", "description": "#/components/schemas/Item",
+                      "default": "#/components/schemas/Item",
+                      "properties": {"item": {"$ref": "#/components/schemas/Item"}}}
+                  }}
+                }
+                """;
+        merger(app -> bytes(spec), List.of("_default")).customise(doc);
+
+        Map<String, Schema> schemas = doc.getComponents().getSchemas();
+        assertNotNull(schemas.get("vespera_Item"), "the clashing Item is renamed");
+        Schema<?> note = schemas.get("Note");
+        assertEquals("#/components/schemas/Item", note.getDescription());
+        assertEquals("#/components/schemas/Item", note.getDefault());
+        assertEquals("#/components/schemas/vespera_Item",
+                ((Schema<?>) note.getProperties().get("item")).get$ref(), "a $ref is rewritten");
+    }
+
     @Test
     void publicRustOperationsDoNotInheritJavasTopLevelSecurity() {
         String spec = """

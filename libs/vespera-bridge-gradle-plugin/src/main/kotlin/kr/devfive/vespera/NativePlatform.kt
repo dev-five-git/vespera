@@ -282,9 +282,12 @@ internal object NativePlatform {
 
     /**
      * The OS segment a Rust [triple] builds for (`<arch>-<vendor>-<os>[-<abi>]`),
-     * or `null` for an OS the plugin does not bundle.
+     * or `null` for an OS the plugin does not bundle. An Android (Bionic) or
+     * OpenHarmony (`ohos`) ABI is not a glibc/musl Linux library, so it is `null`
+     * too: bundled as `native/linux-<arch>` it fails to load on the JVM.
      */
     private fun tripleOs(triple: String): String? = when {
+        "-linux-android" in triple || "-linux-ohos" in triple -> null
         "-linux" in triple -> "linux"
         "-windows" in triple -> "windows"
         // Only darwin triples: `aarch64-apple-ios` is an iOS build, not a macOS dylib.

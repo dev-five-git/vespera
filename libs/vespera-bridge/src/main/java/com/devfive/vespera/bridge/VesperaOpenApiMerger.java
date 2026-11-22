@@ -13,7 +13,6 @@ import io.swagger.v3.oas.models.Paths;
 import io.swagger.v3.oas.models.tags.Tag;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -236,30 +235,39 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
         return "#/components/" + section + "/" + name.replace("~", "~0").replace("/", "~1");
     }
 
-    /** Rewrite every string value equal to a renamed {@code $ref} (incl. discriminator mappings). */
+    /**
+     * Rewrite the renamed pointers in place: the value of each {@code $ref} key and
+     * each {@code discriminator.mapping} value. Any other string that merely equals
+     * a pointer (an example, a default, an enum member, a description) is left alone.
+     */
     private static void rewriteRefs(JsonNode node, Map<String, String> renames) {
         if (node instanceof ObjectNode object) {
-            Iterator<Map.Entry<String, JsonNode>> it = object.properties().iterator();
-            while (it.hasNext()) {
-                Map.Entry<String, JsonNode> entry = it.next();
-                String target = entry.getValue().isTextual() ? renames.get(entry.getValue().asText()) : null;
-                if (target != null) {
-                    entry.setValue(TextNode.valueOf(target));
+            for (Map.Entry<String, JsonNode> entry : object.properties()) {
+                JsonNode value = entry.getValue();
+                if (value.isTextual() && "$ref".equals(entry.getKey())) {
+                    entry.setValue(renamedPointer(value, renames));
+                } else if ("discriminator".equals(entry.getKey())
+                        && value.get("mapping") instanceof ObjectNode mapping) {
+                    for (Map.Entry<String, JsonNode> target : mapping.properties()) {
+                        if (target.getValue().isTextual()) {
+                            target.setValue(renamedPointer(target.getValue(), renames));
+                        }
+                    }
                 } else {
-                    rewriteRefs(entry.getValue(), renames);
+                    rewriteRefs(value, renames);
                 }
             }
         } else if (node instanceof ArrayNode array) {
-            for (int i = 0; i < array.size(); i++) {
-                JsonNode element = array.get(i);
-                String target = element.isTextual() ? renames.get(element.asText()) : null;
-                if (target != null) {
-                    array.set(i, TextNode.valueOf(target));
-                } else {
-                    rewriteRefs(element, renames);
-                }
+            for (JsonNode element : array) {
+                rewriteRefs(element, renames);
             }
         }
+    }
+
+    /** The renamed pointer for a textual {@code $ref} value, or the value itself when it was not renamed. */
+    private static JsonNode renamedPointer(JsonNode pointer, Map<String, String> renames) {
+        String target = renames.get(pointer.asText());
+        return target == null ? pointer : TextNode.valueOf(target);
     }
 
     /** The renamed security schemes ({@code old name → new name}) among {@code refRenames}. */

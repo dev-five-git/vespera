@@ -419,6 +419,36 @@ class NativePlatformTest {
         assertTrue(builds.any { it.platform == platform && it.triple == triple }, builds.toString())
     }
 
+    /**
+     * `*-linux-android*` (Bionic) and `*-linux-ohos` triples name the Linux OS
+     * but link against a libc the JVM's glibc/musl `linux-<arch>` folder cannot
+     * load, so a `linux-<arch>` key may not take them (see [aTripleOfAnotherOsIsRejectedForItsKey]).
+     */
+    @ParameterizedTest
+    @CsvSource(
+        "linux-aarch64, aarch64-linux-android",
+        "linux-x86_64, x86_64-linux-android",
+        "linux-arm, armv7-linux-androideabi",
+        "linux-aarch64, aarch64-unknown-linux-ohos",
+    )
+    fun aBionicOrOhosLinuxTripleIsRejectedForALinuxKey(key: String, triple: String) {
+        val error = assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds("linux-x86_64", "demo", "release", mapOf(key to triple))
+        }
+        assertTrue(error.message!!.contains("key's os is 'linux'"), error.message)
+    }
+
+    /** The glibc and musl `linux-<arch>` triples stay accepted (the rejection is ABI-specific). */
+    @Test
+    fun aGlibcOrMuslLinuxTripleIsStillAcceptedForALinuxKey() {
+        val builds = NativePlatform.plannedBuilds(
+            "linux-x86_64", "demo", "release",
+            mapOf("linux-aarch64" to "aarch64-unknown-linux-gnu", "linux-x86_64" to "x86_64-unknown-linux-musl"),
+        )
+        assertTrue(builds.any { it.platform == "linux-aarch64" }, builds.toString())
+        assertTrue(builds.any { it.platform == "linux-x86_64-musl" }, builds.toString())
+    }
+
     @Test
     fun aKeyWithATripleArchAliasIsRejectedForTheJvmArch() {
         val alias = assertThrows<IllegalArgumentException> {
