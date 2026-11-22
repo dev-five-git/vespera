@@ -51,8 +51,11 @@ class SpringdocHttpTest extends AbstractVesperaHttpIntegrationTest {
         assertTrue(config.contains("\"url\":\"/v3/api-docs/vespera/_default\""), config);
         assertTrue(config.contains("\"url\":\"/v3/api-docs/vespera/admin\""), config);
 
-        // springdoc's own (Java) document does not list the proxy catch-all.
+        // springdoc's own (Java) document lists neither the proxy catch-all nor
+        // the Rust paths: a merge regression would leak /health or /dashboard here.
         String java = get("/v3/api-docs");
         assertFalse(java.contains("/**"), java);
+        assertFalse(java.contains("\"/health\""), java);
+        assertFalse(java.contains("\"/dashboard\""), java);
     }
 }

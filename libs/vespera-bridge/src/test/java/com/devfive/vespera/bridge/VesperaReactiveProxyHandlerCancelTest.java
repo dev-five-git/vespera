@@ -1,5 +1,6 @@
 package com.devfive.vespera.bridge;
 
+import static com.devfive.vespera.bridge.ReactiveTestSupport.responseWire;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -93,5 +94,28 @@ class VesperaReactiveProxyHandlerCancelTest {
         DispatchEvent event = awaitEvent("/orders");
         assertEquals(VesperaReactiveProxyHandler.CLIENT_CLOSED_REQUEST, event.status());
         assertEquals(AppTags.UNKNOWN, event.app(), "no answer arrived: the name is not learned");
+    }
+
+    /**
+     * Rust rejected an unregistered app name before lookup (its 404 header
+     * reached the proxy), then the client went away mid-body. The reported
+     * outcome is 499, but 404 is a pre-lookup status that proves no handler ran,
+     * so the name must not be learned from the cancel.
+     */
+    @Test
+    void streamCancelledAfterRustRejectedTheAppKeepsItUnknown() throws Exception {
+        CountDownLatch hold = new CountDownLatch(1);
+        transport.streamHeader = responseWire(404, "{\"content-type\":\"text/event-stream\"}", "");
+        transport.streamAfterHeader = hold;
+        try {
+            Disposable running = handler().handle(sse("/ghost/feed", "ghost")).subscribe();
+            assertTrue(transport.headersSent.tryAcquire(5, TimeUnit.SECONDS));
+            running.dispose();
+            DispatchEvent event = awaitEvent("/ghost/feed");
+            assertEquals(VesperaReactiveProxyHandler.CLIENT_CLOSED_REQUEST, event.status());
+            assertEquals(AppTags.UNKNOWN, event.app(), "Rust's 404 is not a handler answer: not learned");
+        } finally {
+            hold.countDown();
+        }
     }
 }

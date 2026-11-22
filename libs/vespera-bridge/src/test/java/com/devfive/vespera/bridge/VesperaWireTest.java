@@ -794,10 +794,11 @@ class VesperaWireTest {
                 new VesperaWireCodec.ExposedByteArrayOutputStream(0);
         bytes.put('a');
         bytes.putAscii("bc");
-        bytes.putAsciiSlice("ignored", 3, 3);
+        // A non-empty range: "ignored"[3, 6) is "ore", which must grow the buffer (4 -> 8).
+        bytes.putAsciiSlice("ignored", 3, 6);
 
-        assertEquals(4, bytes.capacity());
-        assertEquals("abc", new String(bytes.backingArray(), 0, bytes.size(), StandardCharsets.US_ASCII));
+        assertEquals(8, bytes.capacity());
+        assertEquals("abcore", new String(bytes.backingArray(), 0, bytes.size(), StandardCharsets.US_ASCII));
 
         Method growCap = VesperaWireCodec.ExposedByteArrayOutputStream.class
                 .getDeclaredMethod("growCap", int.class, int.class);

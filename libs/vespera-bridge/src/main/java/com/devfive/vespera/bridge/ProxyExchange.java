@@ -35,13 +35,14 @@ final class ProxyExchange {
     /** Whether the request was handed to the native dispatch. */
     volatile boolean reachedRust;
     /**
-     * Whether Rust answered: a streamed response header was applied, or a
-     * buffered wire response arrived. Set only by the WebFlux handler
-     * ({@code VesperaReactiveProxyHandler}); it decides the app tag of a
-     * client cancel ({@link #completeCancelled}), where {@link #reachedRust}
-     * alone would also count a request still pending at the cancel.
+     * The status Rust answered with (its header was applied: a streamed header,
+     * or a buffered wire response), {@code 0} while Rust has not answered. Set
+     * only by the WebFlux handler ({@code VesperaReactiveProxyHandler}); it
+     * decides the app tag of a client cancel ({@link #completeCancelled}), where
+     * {@link #reachedRust} alone would also count a request still pending at the
+     * cancel, and where the 499 outcome must not stand in for Rust's status.
      */
-    volatile boolean rustAnswered;
+    volatile int rustStatus;
     private final AtomicBoolean completed = new AtomicBoolean();
 
     ProxyExchange(Logger log, List<DispatchObserver> observers, String method, String requestId) {
@@ -74,16 +75,23 @@ final class ProxyExchange {
         return completed.get();
     }
 
+    /** Record that Rust answered with {@code status} (its response header is applied). */
+    void markRustAnswered(int status) {
+        rustStatus = status;
+    }
+
     /**
      * The WebFlux client went away before the request ended: report
      * {@code status} with the app tag learned only from a Rust answer that
-     * already arrived ({@link #rustAnswered}, set only on the WebFlux path).
-     * A buffered request still pending at the cancel never teaches the
-     * client-selected name. Only the WebFlux handler calls this.
+     * already arrived ({@link #rustStatus}, set only on the WebFlux path), and
+     * judged by the status Rust answered: the 499 outcome is not a handler
+     * status, so a name Rust rejected before lookup (404, 503, ...) stays
+     * unlearned. A buffered request still pending at the cancel never teaches
+     * the client-selected name. Only the WebFlux handler calls this.
      */
     void completeCancelled(int status, boolean panicked) {
-        reachedRust = rustAnswered;
-        complete(status, panicked);
+        reachedRust = rustStatus != 0;
+        finish(status, rustStatus, panicked, null);
     }
 
     /** Report the outcome; only the first call counts. */
@@ -97,12 +105,21 @@ final class ProxyExchange {
      * failure produces one WARN, never a second line for the same request.
      */
     void complete(int status, boolean panicked, Throwable cause) {
+        finish(status, status, panicked, cause);
+    }
+
+    /**
+     * Report {@code status}, judging the app tag by {@code tagStatus} (the
+     * status the tag is learned from: the outcome itself, or Rust's answer on a
+     * client cancel).
+     */
+    private void finish(int status, int tagStatus, boolean panicked, Throwable cause) {
         if (!completed.compareAndSet(false, true)) {
             return;
         }
         long durationNanos = System.nanoTime() - startNanos;
         // tag() may learn the app name: always called.
-        String appName = appTags.tag(app, status, panicked, reachedRust);
+        String appName = appTags.tag(app, tagStatus, panicked, reachedRust);
         boolean warn = panicked || status >= 500;
         if (!warn && observers.isEmpty()) {
             // Nothing to log or notify: skip the MDC swap and the lambda.

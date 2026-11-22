@@ -499,8 +499,6 @@ public class VesperaReactiveProxyHandler implements WebHandler {
 
     static Mono<Void> writeBuffered(byte[] wire, ReactiveProxyResponse out, ProxyExchange px,
             String method, long cap) {
-        // The wire response arrived: Rust answered.
-        px.rustAnswered = true;
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
         int bodyOff = 4 + headerLen;
         int bodyLen = wire.length - bodyOff;
@@ -510,6 +508,7 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                             + cap + " (actual " + bodyLen + " bytes)");
         }
         HeaderPolicy.ResponseHeaderAccumulator acc = out.applyWireHeader(wire, 4, headerLen);
+        px.markRustAnswered(acc.status);
         out.setContentLength(WireResponseWriter.bufferedContentLength(
                 acc.status, method, bodyLen, acc.declaredContentLength()));
         int toWrite = WireResponseWriter.responsePermitsBody(acc.status, method) ? bodyLen : 0;
@@ -553,8 +552,9 @@ public class VesperaReactiveProxyHandler implements WebHandler {
                 px.reachedRust = true;
                 transport.dispatchStreaming(wire, headerBytes -> ProxyExchange.withMdc(px.requestId, () -> {
                     int headerLen = VesperaWireCodec.readHeaderLength(headerBytes);
-                    gate.onHeader(out.applyWireHeader(headerBytes, 4, headerLen, true), method);
-                    px.rustAnswered = true;
+                    HeaderPolicy.ResponseHeaderAccumulator acc = out.applyWireHeader(headerBytes, 4, headerLen, true);
+                    gate.onHeader(acc, method);
+                    px.markRustAnswered(acc.status);
                     return null;
                 }), gate);
                 gate.finish();
