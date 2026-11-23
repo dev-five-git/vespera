@@ -3,7 +3,7 @@ plugins {
     // Execution data for the bridge's reactive proxy, merged into the
     // libs/vespera-bridge JaCoCo report like demo-app's.
     jacoco
-    id("org.springframework.boot") version "4.1.2"
+    id("org.springframework.boot") version "4.2.0"
     id("io.spring.dependency-management") version "1.1.7"
     // Same plugin as demo-app: bundles the rust_jni_demo cdylib and adds the
     // kr.devfive:vespera-bridge dependency (which brings NO transitive deps —

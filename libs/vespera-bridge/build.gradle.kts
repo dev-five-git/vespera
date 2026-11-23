@@ -80,11 +80,11 @@ repositories {
 //
 // Compile target: Spring Boot 4.1 / Spring Framework 7.0.  Runtime support
 // for Spring Boot 3.5 / Framework 6.2 is verified by the `testBoot3` task.
-val springBootVersion = "4.1.2"
-val springFrameworkVersion = "7.0.10"
+val springBootVersion = "4.2.0"
+val springFrameworkVersion = "7.1.0"
 val springBoot3Version = "3.5.16"
 val springFramework3Version = "6.2.19"
-val micrometerVersion = "1.17.2"
+val micrometerVersion = "1.18.0"
 // Optional springdoc-openapi integration (VesperaSpringdocAutoConfiguration):
 // springdoc 3.x targets Boot 4, 2.x Boot 3.5 — the APIs the bridge uses exist in both.
 val springdocVersion = "3.2.0"
