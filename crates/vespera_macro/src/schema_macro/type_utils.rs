@@ -7,8 +7,10 @@ use quote::quote;
 use serde_json;
 use syn::{GenericArgument, PathArguments, Type};
 
+use super::file_lookup::call_site_module;
 use super::module_scope::{
-    ModuleScope, Resolved, module_scope, path_tokens, resolve_name, segment_ident,
+    ModuleScope, Resolved, module_scope, path_readable_from, path_tokens, resolve_name,
+    segment_ident,
 };
 
 /// SeaORM relation wrapper kind.
@@ -251,6 +253,7 @@ pub fn resolve_type_with_params(
         module: source_module_path,
         scope: scope.as_deref(),
         generic_params,
+        call_site: call_site_module(),
     }
     .ty(ty)
 }
@@ -259,6 +262,8 @@ struct TypeResolver<'a> {
     module: &'a [String],
     scope: Option<&'a ModuleScope>,
     generic_params: &'a [String],
+    /// The module the emitted type is written in (`None`: unknown).
+    call_site: Option<Vec<String>>,
 }
 
 impl TypeResolver<'_> {
@@ -434,6 +439,13 @@ impl TypeResolver<'_> {
                 segments = rooted;
             }
         }
+        let names: Vec<String> = segments.iter().map(|(name, _)| name.clone()).collect();
+        if names.first().is_some_and(|first| first == "crate")
+            && !path_readable_from(&names, self.call_site.as_deref())
+        {
+            let owner = &names[..names.len() - 1];
+            return Some(unreadable(&last.ident, owner));
+        }
         Some(render_segments(&segments))
     }
 
@@ -461,6 +473,9 @@ impl TypeResolver<'_> {
                 return quote! { #path #args };
             }
             if scope.locals.contains(&name) {
+                if !scope.item_readable_from(&name, self.call_site.as_deref()) {
+                    return unreadable(ident, self.module);
+                }
                 return self.module_qualified(ident, &args);
             }
         }
@@ -678,6 +693,20 @@ const SEA_ORM_PRELUDE_NAMES: &[&str] = &[
     "Decimal",
     "BigDecimal",
 ];
+
+/// The error for a name the emitted type cannot read: an item of `owner` that
+/// is private there, named from the call site (`E0603`).
+fn unreadable(ident: &syn::Ident, owner: &[String]) -> TokenStream {
+    syn::Error::new(
+        ident.span(),
+        format!(
+            "schema_type!: `{}` is private to `{}`, so the DTO emitted elsewhere cannot name it: make it `pub(crate)` or declare the DTO in that module",
+            strip_raw(ident),
+            owner.join("::"),
+        ),
+    )
+    .to_compile_error()
+}
 
 /// Re-roots every path of an array length expression ([`TypeResolver::len_path`]).
 struct LenPaths<'r, 'a>(&'r TypeResolver<'a>);

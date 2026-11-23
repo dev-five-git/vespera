@@ -5,7 +5,6 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::super::from_model::FieldMapping;
-use crate::parser::strip_raw_prefix_owned;
 
 /// The `new_field: source.field` initialisers building the DTO from a
 /// `source` value (`Some(..)` around `partial`-wrapped fields; `None` for
@@ -63,40 +62,6 @@ pub(super) fn gate_items(cfg: &TokenStream, items: TokenStream) -> TokenStream {
     )
 }
 
-/// Whether a field of visibility `vis` declared in `source_module` can be
-/// read as `source.field` from the call-site module (`None`: unknown, as in
-/// unit tests — taken as readable). A private field is readable from its
-/// module and that module's descendants, `pub(super)` / `pub(in path)` from
-/// the module they name.
-pub(in crate::schema_macro) fn readable_from(
-    vis: &syn::Visibility,
-    source_module: &[String],
-    call_site: Option<&[String]>,
-) -> bool {
-    let Some(call_site) = call_site else {
-        return true;
-    };
-    let scope: Vec<String> = match vis {
-        syn::Visibility::Public(_) => return true,
-        syn::Visibility::Inherited => source_module.to_vec(),
-        syn::Visibility::Restricted(restricted) => {
-            let mut scope = source_module.to_vec();
-            for segment in &restricted.path.segments {
-                match strip_raw_prefix_owned(segment.ident.to_string()).as_str() {
-                    "crate" => scope = vec!["crate".to_string()],
-                    "self" => {}
-                    "super" => {
-                        scope.pop();
-                    }
-                    name => scope.push(name.to_string()),
-                }
-            }
-            scope
-        }
-    };
-    call_site.starts_with(&scope)
-}
-
 /// The DTO field's visibility: a `pub(super)` / `pub(in path)` names a
 /// module relative to (or above) the SOURCE, meaningless — or an error
 /// (E0742) — at the call site, so it widens to `pub(crate)`.
@@ -116,30 +81,6 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-
-    #[rstest]
-    #[case::public("pub", "crate::routes", true)]
-    #[case::crate_visible("pub(crate)", "crate::routes", true)]
-    #[case::private_elsewhere("", "crate::routes", false)]
-    #[case::private_same_module("", "crate::models::user", true)]
-    #[case::private_child_module("", "crate::models::user::dto", true)]
-    #[case::super_sibling("pub(super)", "crate::models::post", true)]
-    #[case::super_outside("pub(super)", "crate::routes", false)]
-    #[case::in_path("pub(in crate::models)", "crate::models::post", true)]
-    #[case::in_path_outside("pub(in crate::models)", "crate::routes", false)]
-    #[case::self_restricted("pub(self)", "crate::routes", false)]
-    #[case::raw_segment("pub(in crate::r#models)", "crate::models", true)]
-    fn readable_from_follows_visibility(
-        #[case] vis: &str,
-        #[case] call_site: &str,
-        #[case] expected: bool,
-    ) {
-        let vis: syn::Visibility = syn::parse_str(vis).unwrap();
-        let source = ["crate", "models", "user"].map(String::from);
-        let call_site: Vec<String> = call_site.split("::").map(String::from).collect();
-        assert_eq!(readable_from(&vis, &source, Some(&call_site)), expected);
-        assert!(readable_from(&vis, &source, None), "unknown call site");
-    }
 
     #[rstest]
     #[case::public("pub", "pub")]

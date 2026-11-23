@@ -10,7 +10,8 @@ use quote::quote;
 use super::cfg_eval::Predicate;
 use super::field_attrs::CarriedAttrs;
 use super::seaorm::{
-    extract_sea_orm_default_value, has_sea_orm_primary_key, is_sql_function_default,
+    extract_sea_orm_default_expr_sql, extract_sea_orm_default_value, has_sea_orm_primary_key,
+    is_sql_function_default,
 };
 use super::type_utils;
 use crate::parser::extract_default;
@@ -87,7 +88,8 @@ pub(super) fn generate_sea_orm_default_attrs_in(
     }
 
     // Check for sea_orm(default_value) and sea_orm(primary_key)
-    let default_value = extract_sea_orm_default_value(original_attrs);
+    let default_value = extract_sea_orm_default_value(original_attrs)
+        .or_else(|| extract_sea_orm_default_expr_sql(original_attrs));
     let has_pk = has_sea_orm_primary_key(original_attrs, original_ty, primary_key_count);
 
     // No default source found

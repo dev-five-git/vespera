@@ -599,6 +599,52 @@ fn test_reroot_serde_paths(#[case] attr: &str, #[case] expected: &str) {
     );
 }
 
+/// SM4-01 (round 40): the serde function paths of a DTO emitted at `call_site`
+/// must be readable there. Private items of `crate::models::user` are refused
+/// from `crate::routes`; a `pub` item, a same-module call site, an unknown
+/// name, a leading `::`, a non-path key and a non-string value are not checked.
+#[rstest]
+#[case::private_fn(r#"#[serde(default = "default_name")]"#, Some("crate::routes"), true)]
+#[case::private_module_path(r#"#[serde(with = "codecs::as_string")]"#, Some("crate::routes"), true)]
+#[case::raw_private_module(
+    r#"#[serde(deserialize_with = "r#type::de")]"#,
+    Some("crate::routes"),
+    true
+)]
+#[case::pub_import(r#"#[serde(serialize_with = "ser")]"#, Some("crate::routes"), false)]
+#[case::same_module(
+    r#"#[serde(default = "default_name")]"#,
+    Some("crate::models::user"),
+    false
+)]
+#[case::unknown_call_site(r#"#[serde(default = "default_name")]"#, None, false)]
+#[case::unknown_name(
+    r#"#[serde(skip_serializing_if = "Option::is_none")]"#,
+    Some("crate::routes"),
+    false
+)]
+#[case::leading_colon(r#"#[serde(default = "::other::f")]"#, Some("crate::routes"), false)]
+#[case::non_path_key(r#"#[serde(rename = "x")]"#, Some("crate::routes"), false)]
+#[case::bare_key(r"#[serde(default)]", Some("crate::routes"), false)]
+#[case::non_string_value(r"#[serde(default = 1)]", Some("crate::routes"), false)]
+#[case::unparseable_list(r"#[serde]", Some("crate::routes"), false)]
+#[case::not_serde(r#"#[schema(default = "default_name")]"#, Some("crate::routes"), false)]
+fn unreadable_serde_path_refuses_private_items(
+    #[case] attr: &str,
+    #[case] call_site: Option<&str>,
+    #[case] refused: bool,
+) {
+    let (_dir, _guard) = serde_path_crate();
+    let attrs = syn::parse_str::<syn::DeriveInput>(&format!("{attr} struct S;"))
+        .unwrap()
+        .attrs;
+    let module = ["crate", "models", "user"].map(String::from);
+    let call_site: Option<Vec<String>> =
+        call_site.map(|site| site.split("::").map(String::from).collect());
+    let error = unreadable_serde_path(&attrs, &module, call_site.as_deref());
+    assert_eq!(error.is_some(), refused, "{error:?}");
+}
+
 fn serde_path_crate() -> (tempfile::TempDir, crate::env_access::test_env::EnvGuard) {
     let dir = tempfile::TempDir::new().unwrap();
     let src = dir.path().join("src");

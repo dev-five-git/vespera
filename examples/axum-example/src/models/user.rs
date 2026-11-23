@@ -14,10 +14,10 @@ pub struct Model {
     /// User name
     pub name: String,
     /// Created at
-    #[sea_orm(default_value = "NOW()")]
+    #[sea_orm(default_expr = "Expr::cust(\"NOW()\")")]
     pub created_at: DateTimeWithTimeZone,
     /// Updated at
-    #[sea_orm(default_value = "NOW()")]
+    #[sea_orm(default_expr = "Expr::cust(\"NOW()\")")]
     pub updated_at: DateTimeWithTimeZone,
     #[sea_orm(has_many)]
     pub memos: HasMany<super::memo::Entity>,

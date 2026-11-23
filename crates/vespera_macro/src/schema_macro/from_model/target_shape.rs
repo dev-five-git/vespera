@@ -4,8 +4,8 @@
 
 use super::{source_column_read, source_field_named};
 use crate::schema_macro::field_selection::selected_rust_names;
-use crate::schema_macro::generate_type::readable_from;
 use crate::schema_macro::input::SchemaTypeInput;
+use crate::schema_macro::module_scope::readable_from;
 use crate::schema_macro::seaorm::{
     convert_relation_type_to_schema_with_info, has_sea_orm_database_default,
     has_sea_orm_primary_key, primary_key_count,

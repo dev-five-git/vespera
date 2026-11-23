@@ -160,13 +160,17 @@ fn still_declared(
     chain: &[String],
     ident: &str,
     line: usize,
+    generated: bool,
     scope: Scope,
 ) -> bool {
     let textual = match scope {
         Scope::File => super::count_items_named(items, ident),
         Scope::Module => declared_in_module(items, chain, ident),
     };
-    textual > 0 || schema_type_lines(items, ident).contains(&line)
+    // Only a generated DTO has no textual declaration to check: a derived item
+    // that left its position is not kept by a `schema_type!` naming it there
+    // (SM0-L1, round 40).
+    textual > 0 || (generated && schema_type_lines(items, ident).contains(&line))
 }
 
 /// Remember the current fingerprint of `identity`'s file and item module.
@@ -247,16 +251,22 @@ fn left(existing: &StructMetadata, scope: Scope) -> bool {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(identity)
-        .map(|recorded| (recorded.chain.clone(), recorded.fingerprint));
+        .map(|recorded| {
+            (
+                recorded.chain.clone(),
+                recorded.fingerprint,
+                recorded.generated,
+            )
+        });
     let path = Path::new(file);
     let line = line_of(identity);
     match recorded {
-        Some((chain, fingerprint)) if fingerprint != get_file_fingerprint(path) => {
+        Some((chain, fingerprint, generated)) if fingerprint != get_file_fingerprint(path) => {
             // Unparseable mid-edit but present: the item may still be in it
             // (R26-SM-L1), so only a file that is gone counts as left.
             get_file_content(path).is_none_or(|content| {
                 with_fallback_parse(&content, |parsed| {
-                    !still_declared(&parsed.items, &chain, ident, line, scope)
+                    !still_declared(&parsed.items, &chain, ident, line, generated, scope)
                 })
                 .unwrap_or(false)
             })

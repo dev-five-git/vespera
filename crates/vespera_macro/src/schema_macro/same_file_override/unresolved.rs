@@ -7,7 +7,7 @@ use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 
 use crate::schema_macro::cfg_eval::{Predicate, statically_active};
-use crate::schema_macro::generate_type::assignments::readable_from;
+use crate::schema_macro::module_scope::readable_from;
 
 use super::adapter_ref::cfg_attr_items;
 
