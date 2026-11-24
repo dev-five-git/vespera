@@ -85,6 +85,13 @@ fn test_harness_build_never_prunes_the_library_sidecar() {
     assert_ne!(sidecar_stem(&library_spec), sidecar_stem(&harness_spec));
     assert_ne!(library_spec, harness_spec);
     assert!(harness_spec.exists());
+    // The harness build's own prune with no grace period: the library copy
+    // survives because its stem differs, not because nothing was old enough.
+    crate::vespera_impl::sidecar_write::prune_superseded_older_than(
+        &harness_spec,
+        &sidecar_stem(&harness_spec),
+        std::time::Duration::ZERO,
+    );
     assert!(
         library_spec.exists(),
         "the test harness build pruned {}",
@@ -229,4 +236,30 @@ fn gating_a_module_in_the_crate_root_invalidates_the_cache() {
         !gated.contains("Fixture") && !gated.contains("/debug"),
         "{gated}"
     );
+}
+
+/// A cache hit regenerates unless the content-addressed include copy is the
+/// spec its sidecar carries (round-41 R41-MR6-L1): a truncated or edited copy
+/// fails, a copy matching the sidecar's spec passes.
+#[test]
+fn export_include_matches_only_the_spec_its_sidecar_carries() {
+    let dir = TempDir::new().unwrap();
+    let include = dir.path().join("app.openapi.json");
+    let spec = r#"{"openapi":"3.1.0"}"#;
+    let body = &spec[..spec.len() - 1];
+    let key = crate::vespera_impl::merge_lookup::CATCH_ALL_KEY;
+    let sidecar = format!("{body},\"{key}\":{{}}}}");
+
+    fs::write(&include, spec).unwrap();
+    assert!(export_include_matches(&include, &sidecar));
+    fs::write(&include, &spec[..spec.len() - 4]).unwrap();
+    assert!(!export_include_matches(&include, &sidecar));
+    fs::write(&include, r#"{"openapi":"3.1.1"}"#).unwrap();
+    assert!(!export_include_matches(&include, &sidecar));
+    // A sidecar without its catch-all key carries no spec to compare with.
+    assert!(!export_include_matches(&include, spec));
+    assert!(!export_include_matches(
+        &dir.path().join("missing.json"),
+        &sidecar
+    ));
 }

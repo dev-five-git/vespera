@@ -401,7 +401,7 @@ pub fn process_route_attribute(
     // (rejected in `typed_response_assertions`); its other types are asserted.
     // Checked before the route is stored, so a rejected entry never reaches
     // `ROUTE_STORAGE` (round-40 MR3-L3).
-    let generics = generic_scope::param_names(&item_fn.sig.generics);
+    let generics = generic_scope::Params::of(&item_fn.sig.generics);
     let assertions = route_args
         .responses
         .as_ref()
@@ -480,7 +480,7 @@ pub fn process_route_attribute(
 /// other payload of such a handler is still asserted.
 #[cfg(feature = "validation")]
 fn validated_payload_assertions(sig: &syn::Signature) -> proc_macro2::TokenStream {
-    let generics = generic_scope::param_names(&sig.generics);
+    let generics = generic_scope::Params::of(&sig.generics);
     let assertions = sig
         .inputs
         .iter()
@@ -488,7 +488,7 @@ fn validated_payload_assertions(sig: &syn::Signature) -> proc_macro2::TokenStrea
             syn::FnArg::Typed(pat_type) => crate::parser::validated_payload_type(&pat_type.ty),
             syn::FnArg::Receiver(_) => None,
         })
-        .filter(|payload| !generic_scope::mentions(*payload, &generics))
+        .filter(|payload| !generics.mentions(*payload))
         .map(|payload| {
             quote::quote_spanned! { syn::spanned::Spanned::span(payload) =>
                 const _: () = {
@@ -513,7 +513,7 @@ fn validated_payload_assertions(sig: &syn::Signature) -> proc_macro2::TokenStrea
 /// handler (the spec would carry a dangling `$ref` to the parameter).
 fn typed_response_assertions(
     arr: &syn::ExprArray,
-    generics: &[String],
+    generics: &generic_scope::Params,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let assertions = arr
         .elems
@@ -526,7 +526,7 @@ fn typed_response_assertions(
             _ => None,
         })
         .map(|path| {
-            if generic_scope::mentions(path, generics) {
+            if generics.mentions(path) {
                 return Err(syn::Error::new_spanned(
                     path,
                     "a generic handler's type or const parameter cannot be a `responses` type: \
@@ -632,7 +632,12 @@ mod tests {
 
         // Non-path entries (rejected by the argument parser) emit nothing.
         let array: syn::ExprArray = syn::parse_quote!([(404, 1), 2]);
-        assert!(typed_response_assertions(&array, &[]).unwrap().is_empty());
+        let no_params = generic_scope::Params::default();
+        assert!(
+            typed_response_assertions(&array, &no_params)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -763,157 +768,6 @@ mod tests {
         }
     }
 
-    // ========== Tests for ROUTE_STORAGE population ==========
-
-    #[test]
-    fn test_route_storage_populated_by_process_route_attribute() {
-        let attr = quote!(
-            get,
-            path = "/{id}",
-            tags = ["users"],
-            description = "Get user by ID",
-            error_status = [404]
-        );
-        let item = quote!(
-            pub async fn get_user_test_storage() -> String {
-                "test".to_string()
-            }
-        );
-        let result = process_route_attribute(attr, item);
-        assert!(result.is_ok());
-
-        // Find our entry by unique fn_name (the current crate's routes are
-        // shared across parallel tests in this crate).
-        let storage = current_crate_routes();
-
-        // Find our entry and verify fields
-        let stored = storage
-            .iter()
-            .find(|s| s.fn_name == "get_user_test_storage");
-        assert!(
-            stored.is_some(),
-            "StoredRouteInfo should be in ROUTE_STORAGE"
-        );
-        let stored = stored.unwrap();
-        assert_eq!(stored.method, Some("get".to_string()));
-        assert_eq!(stored.custom_path, Some("/{id}".to_string()));
-        assert_eq!(stored.tags, Some(vec!["users".to_string()]));
-        assert_eq!(stored.description, Some("Get user by ID".to_string()));
-        assert_eq!(stored.error_status, Some(vec![404]));
-        assert_eq!(stored.headers.len(), 0);
-        assert!(stored.fn_sig_str.contains("get_user_test_storage"));
-    }
-
-    #[test]
-    fn test_route_storage_no_optional_fields() {
-        let attr = quote!();
-        let item = quote!(
-            pub async fn minimal_handler_test() -> String {
-                "test".to_string()
-            }
-        );
-        let result = process_route_attribute(attr, item);
-        assert!(result.is_ok());
-
-        let storage = current_crate_routes();
-
-        let stored = storage.iter().find(|s| s.fn_name == "minimal_handler_test");
-        assert!(stored.is_some());
-        let stored = stored.unwrap();
-        assert_eq!(stored.method, None);
-        assert_eq!(stored.custom_path, None);
-        assert_eq!(stored.tags, None);
-        assert_eq!(stored.description, None);
-        assert_eq!(stored.error_status, None);
-        assert_eq!(stored.headers.len(), 0);
-    }
-
-    #[test]
-    fn test_register_route_replaces_same_file_and_function() {
-        let file_path = Some("/tmp/vespera/routes/replaced.rs".to_string());
-        let fn_name = "__test_replace_route".to_string();
-        let base = StoredRouteInfo {
-            fn_name: fn_name.clone(),
-            method: Some("get".to_string()),
-            custom_path: Some("/before".to_string()),
-            success_status: None,
-            error_status: None,
-            typed_responses: None,
-            tags: None,
-            security: None,
-            headers: Vec::new(),
-            operation_id: None,
-            summary: None,
-            request_example: None,
-            response_example: None,
-            deprecated: false,
-            description: None,
-            file_path: file_path.clone(),
-            fn_sig_str: "pub async fn __test_replace_route ()".to_string(),
-            inline_module: None,
-        };
-        register_route(base);
-        register_route(StoredRouteInfo {
-            method: Some("post".to_string()),
-            custom_path: Some("/after".to_string()),
-            file_path,
-            fn_sig_str: "pub async fn __test_replace_route ()".to_string(),
-            inline_module: None,
-            ..current_crate_routes()
-                .iter()
-                .find(|entry| entry.fn_name == fn_name)
-                .cloned()
-                .expect("first route registration should exist")
-        });
-
-        let matches: Vec<_> = current_crate_routes()
-            .iter()
-            .filter(|entry| entry.fn_name == fn_name)
-            .cloned()
-            .collect();
-        assert_eq!(matches.len(), 1, "same source route should replace");
-        assert_eq!(matches[0].method, Some("post".to_string()));
-        assert_eq!(matches[0].custom_path, Some("/after".to_string()));
-    }
-
-    /// A top-level handler and a same-named one inside an inline module are
-    /// two entries — the inline one must not overwrite (and so hide) the
-    /// top-level registration, nor vice versa.
-    #[test]
-    fn test_register_route_keys_by_inline_module() {
-        let file_path = Some("/tmp/vespera/routes/scoped.rs".to_string());
-        let fn_name = "__test_scoped_route".to_string();
-        for scope in ["", "v2"] {
-            register_route(StoredRouteInfo {
-                fn_name: fn_name.clone(),
-                file_path: file_path.clone(),
-                inline_module: Some(scope.to_string()),
-                ..StoredRouteInfo::default()
-            });
-        }
-        let scopes: Vec<_> = current_crate_routes()
-            .iter()
-            .filter(|entry| entry.fn_name == fn_name)
-            .map(|entry| entry.inline_module.clone())
-            .collect();
-        assert_eq!(scopes, [Some(String::new()), Some("v2".to_string())]);
-    }
-
-    /// `#[route]` reads files through the file cache (Path-extractor check,
-    /// `inline_module_of`), so every invocation starts a fresh epoch.
-    #[test]
-    fn test_route_attribute_bumps_the_file_cache_epoch() {
-        let before = crate::schema_macro::file_cache::current_epoch();
-        process_route_attribute(
-            quote!(get),
-            quote!(
-                pub async fn epoch_probe() {}
-            ),
-        )
-        .unwrap();
-        assert_ne!(crate::schema_macro::file_cache::current_epoch(), before);
-    }
-
     #[test]
     fn test_extract_tag_strings_empty() {
         let arr: syn::ExprArray = syn::parse_quote!([]);
@@ -993,3 +847,6 @@ mod tests_item;
 mod tests_responses;
 #[cfg(test)]
 mod tests_scope;
+
+#[cfg(test)]
+mod tests_storage;

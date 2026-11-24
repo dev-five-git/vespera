@@ -10,8 +10,10 @@
 //!    is not in the storage yet.  Instead of silently dropping it, the crate's
 //!    module tree is walked from its root (`src/lib.rs` / `src/main.rs`)
 //!    following `mod` declarations, and every `pub async fn` carrying
-//!    `#[cron("…")]` / `#[vespera::cron("…")]` that the storage does not know
-//!    yet is added.  Known jobs are matched per function, so a job declared
+//!    `#[cron("…")]` / `#[vespera::cron("…")]` (or a local alias of vespera's
+//!    `cron`, `use vespera::cron as job;`, `use vespera as v;` + `#[v::cron]`)
+//!    that the storage does not know yet is added.  Known jobs are matched per
+//!    function, so a job declared
 //!    after `vespera!` in a file whose earlier jobs are stored is found too.
 //!
 //! The same module tree places the stored jobs: a file path alone names
@@ -450,7 +452,7 @@ impl ModuleTree {
                 module_path,
                 file: &display,
                 inline: "",
-                gate: gate.clone(),
+                gate: gate.inside(&summary.module.gate),
                 inherited_foreign,
             };
             self.visit(&summary.module, &scope);
@@ -584,6 +586,9 @@ struct FileSummary {
 struct ModuleSummary {
     imports: CronImports,
     items: Vec<ItemSummary>,
+    /// The file's own inner `#![cfg(..)]` gate (empty for an inline `mod`,
+    /// whose gate is on its declaration).
+    gate: CfgGate,
 }
 
 /// One item the walk reads: a `mod` or a function carrying a cron attribute.
@@ -630,9 +635,11 @@ fn file_summary(file: &Path) -> Option<std::rc::Rc<FileSummary>> {
                 .then(|| syn::parse_file(content).ok())
                 .flatten()
                 .map(|ast| {
-                    std::rc::Rc::new(FileSummary {
-                        module: summarize(&ast.items, collect_jobs),
-                    })
+                    let mut module = summarize(&ast.items, collect_jobs);
+                    // The file's own inner `#![cfg(..)]` gates every job in it,
+                    // as its declaration's `#[cfg(..)]` does.
+                    module.gate = CfgGate::of(&ast.attrs);
+                    std::rc::Rc::new(FileSummary { module })
                 }),
         )
     })?
@@ -641,36 +648,39 @@ fn file_summary(file: &Path) -> Option<std::rc::Rc<FileSummary>> {
 }
 
 fn summarize(items: &[syn::Item], collect_jobs: bool) -> ModuleSummary {
+    let imports = cron_imports(items);
+    let items = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) => Some(ItemSummary::Mod {
+                name: module.ident.unraw().to_string(),
+                gate: CfgGate::of(&module.attrs),
+                path: path_attr(&module.attrs),
+                inline: module
+                    .content
+                    .as_ref()
+                    .map(|(_, inner)| summarize(inner, collect_jobs)),
+            }),
+            syn::Item::Fn(function)
+                if collect_jobs
+                    && function
+                        .attrs
+                        .iter()
+                        .any(|attr| !cron_entries(attr, &imports).is_empty()) =>
+            {
+                Some(ItemSummary::Cron {
+                    name: function.sig.ident.unraw().to_string(),
+                    gate: CfgGate::of(&function.attrs),
+                    attrs: cron_attrs(function, &imports),
+                })
+            }
+            _ => None,
+        })
+        .collect();
     ModuleSummary {
-        imports: cron_imports(items),
-        items: items
-            .iter()
-            .filter_map(|item| match item {
-                syn::Item::Mod(module) => Some(ItemSummary::Mod {
-                    name: module.ident.unraw().to_string(),
-                    gate: CfgGate::of(&module.attrs),
-                    path: path_attr(&module.attrs),
-                    inline: module
-                        .content
-                        .as_ref()
-                        .map(|(_, inner)| summarize(inner, collect_jobs)),
-                }),
-                syn::Item::Fn(function)
-                    if collect_jobs
-                        && function
-                            .attrs
-                            .iter()
-                            .any(|attr| !cron_entries(attr).is_empty()) =>
-                {
-                    Some(ItemSummary::Cron {
-                        name: function.sig.ident.unraw().to_string(),
-                        gate: CfgGate::of(&function.attrs),
-                        attrs: cron_attrs(function),
-                    })
-                }
-                _ => None,
-            })
-            .collect(),
+        imports,
+        items,
+        gate: CfgGate::default(),
     }
 }
 
@@ -678,11 +688,15 @@ fn summarize(items: &[syn::Item], collect_jobs: bool) -> ModuleSummary {
 /// "…")]` function (none when the function is not one: the attribute macro
 /// reports malformed ones itself). Which of them is the job depends on the
 /// module's cron imports, so it is picked at walk time ([`CronAttr`]).
-fn cron_attrs(function: &syn::ItemFn) -> Vec<CronAttr> {
+fn cron_attrs(function: &syn::ItemFn, imports: &CronImports) -> Vec<CronAttr> {
     if validate_cron_fn(function).is_err() {
         return Vec::new();
     }
-    function.attrs.iter().flat_map(cron_entries).collect()
+    function
+        .attrs
+        .iter()
+        .flat_map(|attr| cron_entries(attr, imports))
+        .collect()
 }
 
 /// The [`CronAttr`]s one attribute of a fn carries: a `#[cron]` itself, or the
@@ -691,8 +705,8 @@ fn cron_attrs(function: &syn::ItemFn) -> Vec<CronAttr> {
 /// makes it a plain job; an undecided `p` (`windows`, `test`, `target_*`, ..)
 /// keeps the job too, registered under `#[cfg(p)]` (see
 /// [`CronMetadata::cfg`]) so rustc decides exactly as it does for the attribute.
-fn cron_entries(attr: &syn::Attribute) -> Vec<CronAttr> {
-    if is_cron_path(attr.path()) {
+fn cron_entries(attr: &syn::Attribute, imports: &CronImports) -> Vec<CronAttr> {
+    if imports.is_cron_path(attr.path()) {
         return vec![cron_attr(attr.path(), attr.parse_args::<CronArgs>(), &[])];
     }
     if !attr.path().is_ident("cfg_attr") {
@@ -711,7 +725,7 @@ fn cron_entries(attr: &syn::Attribute) -> Vec<CronAttr> {
     };
     metas
         .iter()
-        .filter(|meta| is_cron_path(meta.path()))
+        .filter(|meta| imports.is_cron_path(meta.path()))
         .map(|meta| {
             let args = meta
                 .require_list()
@@ -732,29 +746,17 @@ fn cfg_attr_parts(
 
 fn cron_attr(path: &syn::Path, args: syn::Result<CronArgs>, gate: &[String]) -> CronAttr {
     CronAttr {
-        bare: path.segments.len() == 1,
+        bare: path.is_ident("cron"),
         job: args
             .ok()
             .map(|args| (args.expression.value(), args.options(), gate.to_vec())),
     }
 }
 
-/// `cron` or `vespera::cron`.
-fn is_cron_path(path: &syn::Path) -> bool {
-    let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-    matches!(
-        segments
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .as_slice(),
-        ["cron"] | ["vespera", "cron"]
-    )
-}
-
 /// The `use` items of one module that decide what a bare `#[cron]` in it
-/// names (see [`CronImports::foreign`]).
-#[derive(Clone, Copy, Default)]
+/// names (see [`CronImports::foreign`]), and the local names vespera's `cron`
+/// and the vespera crate are bound to in it.
+#[derive(Clone, Default)]
 #[allow(clippy::struct_excessive_bools)]
 struct CronImports {
     /// `use other::cron;`, `use other::{cron};`, `use other::job as cron;`.
@@ -766,6 +768,10 @@ struct CronImports {
     /// `use super::*;` / `use crate::*;`: the names of the enclosing module
     /// (its own `cron` import) reach this module through the glob.
     inheriting_glob: bool,
+    /// Local names of `vespera::cron` (`use vespera::cron as job;`).
+    cron_aliases: Vec<String>,
+    /// Local names of the vespera crate (`use vespera as v;`).
+    crate_aliases: Vec<String>,
 }
 
 impl CronImports {
@@ -776,16 +782,38 @@ impl CronImports {
     /// and so does an inheriting glob when the enclosing module's bare `cron`
     /// is foreign (`inherited`). `crate::*` is approximated by the enclosing
     /// module's decision.
-    fn foreign(self, inherited: bool) -> bool {
+    fn foreign(&self, inherited: bool) -> bool {
         self.explicit_foreign
             || (!self.explicit_vespera
                 && (self.foreign_glob || (self.inheriting_glob && inherited)))
+    }
+
+    /// `cron` (or an alias of vespera's `cron`) or `vespera::cron` (or
+    /// `<alias of the vespera crate>::cron`). An alias is recognised only
+    /// where this module's `use` items bind it, so a `job` bound to another
+    /// crate's `cron` is not a job.
+    fn is_cron_path(&self, path: &syn::Path) -> bool {
+        let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        match segments.as_slice() {
+            [name] => name == "cron" || self.cron_aliases.contains(name),
+            [krate, name] => {
+                name == "cron" && (krate == "vespera" || self.crate_aliases.contains(krate))
+            }
+            _ => false,
+        }
     }
 }
 
 /// The [`CronImports`] of `items` (the `use` items of one module).
 fn cron_imports(items: &[syn::Item]) -> CronImports {
-    fn collect(tree: &syn::UseTree, root: Option<&syn::Ident>, out: &mut CronImports) {
+    // `depth` counts the path segments above `tree`: 1 is a direct child of
+    // the first segment (`vespera::cron as job` or `vespera::{cron as job}`).
+    fn collect(
+        tree: &syn::UseTree,
+        root: Option<&syn::Ident>,
+        depth: usize,
+        out: &mut CronImports,
+    ) {
         let foreign = root.is_some_and(|root| {
             !matches!(
                 root.to_string().as_str(),
@@ -793,7 +821,9 @@ fn cron_imports(items: &[syn::Item]) -> CronImports {
             )
         });
         match tree {
-            syn::UseTree::Path(path) => collect(&path.tree, root.or(Some(&path.ident)), out),
+            syn::UseTree::Path(path) => {
+                collect(&path.tree, root.or(Some(&path.ident)), depth + 1, out);
+            }
             syn::UseTree::Name(name) if name.ident == "cron" => {
                 out.explicit_foreign |= foreign;
                 out.explicit_vespera |= root.is_some() && !foreign;
@@ -802,9 +832,19 @@ fn cron_imports(items: &[syn::Item]) -> CronImports {
                 out.explicit_foreign |= foreign;
                 out.explicit_vespera |= root.is_some() && !foreign;
             }
+            syn::UseTree::Rename(rename)
+                if rename.ident == "cron"
+                    && depth == 1
+                    && root.is_some_and(|root| root == "vespera") =>
+            {
+                out.cron_aliases.push(rename.rename.to_string());
+            }
+            syn::UseTree::Rename(rename) if rename.ident == "vespera" && root.is_none() => {
+                out.crate_aliases.push(rename.rename.to_string());
+            }
             syn::UseTree::Group(group) => {
                 for tree in &group.items {
-                    collect(tree, root, out);
+                    collect(tree, root, depth, out);
                 }
             }
             // A glob may bring in another crate's `cron`; only vespera's (or
@@ -821,7 +861,7 @@ fn cron_imports(items: &[syn::Item]) -> CronImports {
     let mut imports = CronImports::default();
     for item in items {
         if let syn::Item::Use(item) = item {
-            collect(&item.tree, None, &mut imports);
+            collect(&item.tree, None, 0, &mut imports);
         }
     }
     imports
@@ -913,6 +953,8 @@ fn cron_module_path(relative: &str) -> String {
 mod index;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_alias;
 #[cfg(test)]
 mod tests_gate;
 #[cfg(test)]

@@ -9,7 +9,7 @@ pub use components::{
 };
 pub use schema_ref::{
     AdditionalProperties, Reference, SchemaRef, escape_schema_name, schema_name_of_ref,
-    unescape_schema_name,
+    split_schema_ref, unescape_schema_name,
 };
 
 use serde::{Deserialize, Serialize};

@@ -316,7 +316,16 @@ fn declared_mods(declarer: &Path) -> Vec<DeclaredMod> {
     file_cache::derived(declarer, |content| {
         Declared(
             syn::parse_file(content)
-                .map(|file| declared_items(&file.items))
+                .map(|file| {
+                    // The declarer's own inner `#![cfg(..)]` gates every `mod`
+                    // it declares, as an outer `#[cfg(..)]` on each would.
+                    let inner = cfg_predicates(&file.attrs);
+                    let mut mods = declared_items(&file.items);
+                    for module in &mut mods {
+                        module.cfgs.extend(inner.iter().cloned());
+                    }
+                    mods
+                })
                 .unwrap_or_default(),
         )
     })
@@ -608,6 +617,42 @@ mod tests {
         let segments = segs(&["legacy", "users"]);
         assert_eq!(table.declared_segments(&segments), ["legacy", "users"]);
         assert_eq!(table.cfg_predicates(&segments), Vec::<String>::new());
+    }
+
+    /// An inline `#[path = "routes"] mod h { mod x; }` in `src/routes.rs` (not
+    /// `routes/mod.rs`) names its directory from the file's own directory, as
+    /// rustc does: `x` loads `routes/x.rs` (round-41 R41-M1-L1).
+    #[test]
+    fn inline_path_block_in_sibling_file_resolves_beside_the_file() {
+        let dir = tree(&[
+            (
+                "routes.rs",
+                "#[cfg(unix)]\n#[path = \"routes\"]\nmod h {\n    mod x;\n}\n",
+            ),
+            ("routes/x.rs", ""),
+        ]);
+        let table = ModuleTable::new(&dir.path().join("routes"));
+        let segments = segs(&["x"]);
+        assert_eq!(table.declared_segments(&segments), ["h", "x"]);
+        assert_eq!(table.cfg_predicates(&segments), ["unix"]);
+    }
+
+    /// A declarer's inner `#![cfg(..)]` gates every `mod` it declares: a
+    /// folder's `mod.rs` gating `users` gates `routes/users.rs`, the same as an
+    /// outer `#[cfg]` on the declaration (round-41 R41-MR0-M1).
+    #[test]
+    fn declarer_inner_cfg_gates_the_modules_it_declares() {
+        let dir = tree(&[
+            (
+                "routes/mod.rs",
+                "#![cfg(feature = \"admin\")]\npub mod users;\n",
+            ),
+            ("routes/users.rs", ""),
+        ]);
+        let table = ModuleTable::new(&dir.path().join("routes"));
+        let segments = segs(&["users"]);
+        assert_eq!(table.declared_segments(&segments), ["users"]);
+        assert_eq!(table.cfg_predicates(&segments), ["feature = \"admin\""]);
     }
 
     /// `#[path = "helpers/x.rs"]` declared in `routes/admin.rs` loads

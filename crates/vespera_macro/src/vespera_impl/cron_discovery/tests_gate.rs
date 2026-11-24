@@ -112,3 +112,44 @@ fn cfg_gated_modules_and_functions_register_their_jobs_under_their_gates() {
         ]
     );
 }
+
+/// A route-style file gated by its own inner `#![cfg(..)]` (round-41
+/// R41-MR0-M1, the cron walk's twin): its jobs are registered under that
+/// predicate, and a statically false inner gate drops them.
+#[test]
+fn inner_cfg_of_a_file_gates_every_job_in_it() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod admin;\nmod never;\n"),
+        (
+            "admin.rs",
+            r#"#![cfg(feature = "admin")]
+            #[cron("1 * * * * *")] pub async fn tick() {}"#,
+        ),
+        (
+            "never.rs",
+            r#"#![cfg(any())]
+            #[cron("2 * * * * *")] pub async fn gone() {}"#,
+        ),
+    ]);
+    crate::schema_macro::file_cache::bump_epoch();
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), Some(&src.join("lib.rs")));
+    let found: Vec<(String, String, Vec<String>)> = jobs
+        .iter()
+        .map(|job| {
+            (
+                job.module_path.clone(),
+                job.function_name.clone(),
+                job.cfg.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        vec![(
+            "admin".to_owned(),
+            "tick".to_owned(),
+            vec!["feature = \"admin\"".to_owned()]
+        )]
+    );
+}

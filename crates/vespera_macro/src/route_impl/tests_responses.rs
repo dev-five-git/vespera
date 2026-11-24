@@ -101,3 +101,34 @@ fn rejected_generic_responses_entry_is_not_stored() {
         "a rejected route must not be stored"
     );
 }
+
+/// A lifetime named like a module does not make `a::NotFound` a generic
+/// reference: only a type parameter can head a path (round-41 R41-MR3-L2).
+#[test]
+fn lifetime_named_like_a_module_does_not_reject_a_responses_path() {
+    let item = quote!(
+        pub async fn get_one<'a>() -> String {
+            String::new()
+        }
+    );
+    let output = process_route_attribute(quote!(get, responses = [(404, a::NotFound)]), item)
+        .unwrap()
+        .to_string();
+    assert!(
+        output.contains("__vespera_assert_schema :: < a :: NotFound >"),
+        "{output}"
+    );
+}
+
+/// The head of `T::Assoc` names a type parameter, so it is still rejected.
+#[test]
+fn type_param_head_of_a_responses_path_is_rejected() {
+    let item = quote!(
+        pub async fn get_one<T: Clone>() -> String {
+            String::new()
+        }
+    );
+    let error =
+        process_route_attribute(quote!(get, responses = [(404, T::Assoc)]), item).unwrap_err();
+    assert!(error.to_string().contains("dangling `$ref`"), "{error}");
+}

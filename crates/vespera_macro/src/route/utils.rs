@@ -189,9 +189,12 @@ fn extract_typed_responses(array: &syn::ExprArray) -> Option<Vec<(u16, String)>>
     (!responses.is_empty()).then_some(responses)
 }
 
-/// The `responses = [(404, errors::NotFound)]` type as written, without
-/// generic arguments (`errors::NotFound`): the module qualifier lets the
-/// OpenAPI generator tell same-named renamed types apart.
+/// The `responses = [(404, errors::NotFound)]` type as written
+/// (`errors::NotFound`): the module qualifier lets the OpenAPI generator tell
+/// same-named renamed types apart. The segment idents only, so generic
+/// arguments are dropped; the `#[route]` argument parser (`args.rs`,
+/// `responses`) rejects a path that has them, so only argument-free paths reach
+/// this.
 pub fn response_type_path(path: &syn::Path) -> Option<String> {
     let segments: Vec<String> = path
         .segments

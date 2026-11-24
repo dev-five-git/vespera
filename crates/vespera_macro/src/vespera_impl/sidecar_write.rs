@@ -150,7 +150,7 @@ fn unix_secs(time: SystemTime) -> u64 {
         .as_secs()
 }
 
-fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
+pub(super) fn prune_superseded_older_than(keep: &Path, stem: &str, age: Duration) {
     let Some((marker, entries)) = keep.parent().and_then(|dir| {
         Some((
             record_selection(dir, stem, keep)?,

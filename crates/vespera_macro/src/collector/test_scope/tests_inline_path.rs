@@ -74,3 +74,23 @@ fn gated_inline_path_module_nests_under_its_enclosing_block() {
     assert!(scope.file_test_only(&src.join("outer/fixtures/x.rs")));
     assert!(!scope.file_test_only(&src.join("outer/helpers/x.rs")));
 }
+
+/// rustc resolves an inline `#[path = "d"] mod h { .. }` of a non-mod-rs file
+/// (`routes.rs`) against that file's own directory, so its gated child loads
+/// `d/x.rs`, not `routes/d/x.rs` (checked against rustc, round-41 R41-M1-L1).
+#[test]
+fn test_gated_child_of_an_inline_path_module_in_a_non_mod_rs_file_is_beside_the_file() {
+    let krate = crate_with(&[
+        ("lib.rs", "mod routes;\n"),
+        (
+            "routes.rs",
+            "#[path = \"d\"]\nmod h {\n    #[cfg(test)]\n    mod x;\n}\n",
+        ),
+        ("d/x.rs", "pub struct Fixture {}"),
+        ("routes/d/x.rs", "pub struct Kept {}"),
+    ]);
+    let src = krate.path().join("src");
+    let mut scope = TestScope::new(Some(&src));
+    assert!(scope.file_test_only(&src.join("d/x.rs")));
+    assert!(!scope.file_test_only(&src.join("routes/d/x.rs")));
+}
