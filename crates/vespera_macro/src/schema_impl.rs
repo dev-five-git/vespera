@@ -462,6 +462,12 @@ fn collect_schema_attribute_summary(
                     return Err(meta.error("duplicate `name` in `#[schema(..)]`"));
                 }
                 let lit: syn::LitStr = meta.value()?.parse()?;
+                if lit.value().is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        &lit,
+                        "`#[schema(name = ..)]` is the OpenAPI component name: it must not be empty",
+                    ));
+                }
                 attr_name = Some(lit.value());
             } else if meta.path.is_ident("ref") {
                 summary.has_ref_override = true;

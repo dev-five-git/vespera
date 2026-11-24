@@ -398,6 +398,7 @@ pub fn generate_schema_type_code(
                                 &source_module_path,
                                 input.schema_name.as_deref(),
                             ) {
+                                inline_type.check_serde_path()?;
                                 let inline_type_def = generate_inline_type_definition(&inline_type);
                                 inline_type_definitions
                                     .push(assignments::gate_items(&field_cfg, inline_type_def));
@@ -454,6 +455,7 @@ pub fn generate_schema_type_code(
                                 &source_module_path,
                                 input.schema_name.as_deref(),
                             ) {
+                                inline_type.check_serde_path()?;
                                 // Generate inline type definition
                                 let inline_type_def = generate_inline_type_definition(&inline_type);
                                 inline_type_definitions
@@ -807,6 +809,7 @@ pub fn generate_schema_type_code(
     // readable from the call site (a private field of another module is
     // E0616; the `From` is left out instead).
     let buildable = input.add.is_none() && !has_relation_fields && all_readable;
+    checks::check_container_default_path(&parsed_struct.attrs, buildable, &source_module_path)?;
 
     // In multipart mode, skip From and from_model impls entirely
     let source_type: &syn::Type = &input.source_type;

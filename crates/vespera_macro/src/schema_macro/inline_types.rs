@@ -14,7 +14,7 @@ use super::{
     file_lookup::{call_site_module, find_model_from_schema_path},
     module_scope::readable_from,
     seaorm::{RelationFieldInfo, convert_type_with_chrono},
-    transformation::{RenameAll, reroot_serde_paths, serde_only_attrs},
+    transformation::{RenameAll, reroot_serde_paths, serde_only_attrs, unreadable_serde_path},
     type_utils::{is_seaorm_relation_type, snake_to_pascal_case},
 };
 use crate::parser::{extract_rename_all, extract_skip};
@@ -23,11 +23,23 @@ use crate::parser::{extract_rename_all, extract_skip};
 pub struct InlineRelationType {
     /// Name of the inline type (e.g., `MemoResponseRel_User`)
     pub type_name: syn::Ident,
+    /// The first kept field's serde function path the call site cannot read
+    /// (a private `default_title` of the related model's module): the type
+    /// is emitted at the call site, so the caller refuses it (R41-B2-02).
+    pub serde_path_error: Option<syn::Error>,
     /// Fields to include (excluding circular references)
     pub fields: Vec<InlineField>,
     /// The target model's `rename_all`, per serde side (camelCase when it
     /// has none)
     pub rename_all: RenameAll,
+}
+
+impl InlineRelationType {
+    /// Refuses the type when a kept field's serde path is unreadable from the
+    /// call site, where the type is emitted (R41-B2-02).
+    pub fn check_serde_path(&self) -> syn::Result<()> {
+        self.serde_path_error.clone().map_or(Ok(()), Err)
+    }
 }
 
 /// A field in an inline relation type
@@ -207,6 +219,7 @@ fn generate_inline_type_core(
     // Collect fields, excluding circular ones and/or relation types
     let mut fields = Vec::with_capacity(8);
     let call_site = call_site_module();
+    let mut serde_path_error: Option<syn::Error> = None;
     if let syn::Fields::Named(fields_named) = &parsed_model.fields {
         for field in &fields_named.named {
             let field_ident = field.ident.as_ref()?;
@@ -260,6 +273,9 @@ fn generate_inline_type_core(
                             .any(|key| path.is_ident(key))
                     })
                     .collect();
+            serde_path_error = serde_path_error.or_else(|| {
+                unreadable_serde_path(&field.attrs, effective_module_path, call_site.as_deref())
+            });
             let carried = carried_field_attrs(&field.attrs, true, effective_module_path, false);
             let cfg_attrs = carried.cfg_serde_attrs().into_iter();
             kept_attrs.extend(
@@ -283,6 +299,7 @@ fn generate_inline_type_core(
         type_name: inline_type_name,
         fields,
         rename_all,
+        serde_path_error,
     })
 }
 

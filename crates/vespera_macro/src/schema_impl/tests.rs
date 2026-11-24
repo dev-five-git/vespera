@@ -910,3 +910,17 @@ fn cached_default_functions_reuses_the_cached_arc_for_unchanged_files() {
 fn identity_without_file_component_is_never_a_move() {
     assert!(!is_same_item_moved(Some("User@1:7"), Some("User@3:7")));
 }
+
+/// SM3-03: an empty `#[schema(name = "")]` is no OpenAPI component name and is
+/// a spanned compile error, as a malformed one is.
+#[test]
+fn empty_schema_name_is_compile_error() {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        #[schema(name = "")]
+        struct User { id: i32 }
+    };
+    let Err(err) = collect_schema_attribute_summary(&input.attrs) else {
+        panic!("an empty `name` must be refused");
+    };
+    assert!(err.to_string().contains("must not be empty"), "{err}");
+}

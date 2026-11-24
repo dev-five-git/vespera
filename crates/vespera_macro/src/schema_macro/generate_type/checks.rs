@@ -123,6 +123,22 @@ pub(super) fn check_emitted(
     )
 }
 
+/// The source container's serde function path (`#[serde(default = "f")]`)
+/// must name an item the call site can read when the DTO carries it: the
+/// default helper calls `f` from the DTO's module (R41-B2-01). `carried` is
+/// whether the DTO is built from the source (the helper is emitted only then).
+pub(super) fn check_container_default_path(
+    attrs: &[syn::Attribute],
+    carried: bool,
+    source_module: &[String],
+) -> syn::Result<()> {
+    if !carried {
+        return Ok(());
+    }
+    let call_site = super::super::file_lookup::call_site_module();
+    unreadable_serde_path(attrs, source_module, call_site.as_deref()).map_or(Ok(()), Err)
+}
+
 /// The serde function paths of the emitted fields must name items the call
 /// site can read (a private `default_name` of the source module is `E0603` in
 /// the DTO emitted elsewhere).
@@ -162,8 +178,9 @@ pub(super) fn check_transparent(
             attr.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
                 .is_ok_and(|items| items.iter().any(|meta| meta.path().is_ident("transparent")))
         });
+    // A multipart DTO carries no `serde(transparent)` (R41-B2-04): nothing to keep.
     let field_count = emitted + input.add.as_ref().map_or(0, Vec::len);
-    if transparent && field_count != 1 {
+    if transparent && !input.multipart && field_count != 1 {
         return Err(syn::Error::new(
             input.new_type.span(),
             format!(
@@ -199,6 +216,13 @@ mod tests {
     )]
     #[case::not_transparent(r"#[serde(deny_unknown_fields)]", "Dto from Src", 3, true)]
     #[case::not_serde(r"#[transparent]", "Dto from Src", 3, true)]
+    // R41-B2-04: a multipart DTO never keeps the attribute, whatever its count.
+    #[case::multipart_carries_no_transparent(
+        r"#[serde(transparent)]",
+        "Dto from Src, multipart",
+        2,
+        true
+    )]
     fn transparent_needs_exactly_one_field(
         #[case] attr: &str,
         #[case] dsl: &str,

@@ -4,7 +4,6 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use serde_json;
 use syn::{GenericArgument, PathArguments, Type};
 
 use super::file_lookup::call_site_module;
@@ -12,6 +11,9 @@ use super::module_scope::{
     ModuleScope, Resolved, module_scope, path_readable_from, path_tokens, resolve_name,
     segment_ident,
 };
+
+mod type_default;
+pub use type_default::get_type_default;
 
 /// SeaORM relation wrapper kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,25 +465,18 @@ impl TypeResolver<'_> {
                 {
                     return converted;
                 }
-                // Through a glob-imported first segment too (`resolve_name`).
-                let resolved = resolve_name(std::slice::from_ref(&name), self.module);
-                let path = path_tokens(if let Resolved::Path(path) = &resolved {
-                    path
-                } else {
-                    import
-                });
-                return quote! { #path #args };
+                return self.imported(ident, &name, import, &args);
             }
             if scope.locals.contains(&name) {
-                if !scope.item_readable_from(&name, self.call_site.as_deref()) {
-                    return unreadable(ident, self.module);
-                }
-                return self.module_qualified(ident, &args);
+                return self.local_item(scope, &name, ident, &args);
             }
         }
         // A crate-internal glob naming it (`use crate::types::*;` defining
         // `Value`) wins over the alias, like an explicit import does.
         if let Resolved::Path(path) = resolve_name(std::slice::from_ref(&name), self.module) {
+            if let Some(refusal) = refuse_unreadable(ident, &path, self.call_site.as_deref()) {
+                return refusal;
+            }
             if first_named(&path) == Some("sea_orm")
                 && let Some(converted) = self.alias(&name, &segment.arguments, true)
             {
@@ -594,6 +589,51 @@ impl TypeResolver<'_> {
         root.is_some_and(|root| ALIAS_CRATES.contains(&root.as_str()))
     }
 
+    /// A name the source module imports, emitted as the crate path it resolves
+    /// to (also through a glob-imported first segment, `resolve_name`), or as
+    /// the import itself when it resolves to no crate path. Refused when the
+    /// call site cannot read that path (R41-SM3-02).
+    fn imported(
+        &self,
+        ident: &syn::Ident,
+        name: &str,
+        import: &[String],
+        args: &TokenStream,
+    ) -> TokenStream {
+        let resolved = resolve_name(&[name.to_string()], self.module);
+        if let Resolved::Path(path) = &resolved
+            && let Some(refusal) = refuse_unreadable(ident, path, self.call_site.as_deref())
+        {
+            return refusal;
+        }
+        let path = path_tokens(if let Resolved::Path(path) = &resolved {
+            path
+        } else {
+            import
+        });
+        quote! { #path #args }
+    }
+
+    /// A name the source module defines itself, emitted through the module path
+    /// once the item and every module along it can be named from the call site
+    /// (R41-SM4-01): a `pub` item of a private `mod user;` is not nameable
+    /// elsewhere.
+    fn local_item(
+        &self,
+        scope: &ModuleScope,
+        name: &str,
+        ident: &syn::Ident,
+        args: &TokenStream,
+    ) -> TokenStream {
+        if !scope.item_readable_from(name, self.call_site.as_deref()) {
+            return unreadable(ident, self.module);
+        }
+        let mut item = self.module.to_vec();
+        item.push(name.to_string());
+        refuse_unreadable(ident, &item, self.call_site.as_deref())
+            .unwrap_or_else(|| self.module_qualified(ident, args))
+    }
+
     fn module_qualified(&self, ident: &syn::Ident, args: &TokenStream) -> TokenStream {
         let module = path_tokens(self.module);
         quote! { #module :: #ident #args }
@@ -693,6 +733,21 @@ const SEA_ORM_PRELUDE_NAMES: &[&str] = &[
     "Decimal",
     "BigDecimal",
 ];
+
+/// The spanned refusal for a one-name type that resolved to the crate path
+/// `path` (through an import, a glob or the module's own items) when the call
+/// site cannot read every item along it (R41-SM3-02, R41-SM4-01): the
+/// `path()` rule, which checks each module the path crosses.
+fn refuse_unreadable(
+    ident: &syn::Ident,
+    path: &[String],
+    call_site: Option<&[String]>,
+) -> Option<TokenStream> {
+    (!path_readable_from(path, call_site)).then(|| {
+        let owner = &path[..path.len().saturating_sub(1)];
+        unreadable(ident, owner)
+    })
+}
 
 /// The error for a name the emitted type cannot read: an item of `owner` that
 /// is private there, named from the call site (`E0603`).
@@ -853,130 +908,6 @@ pub fn is_map_type(ty: &Type) -> bool {
 /// Types like `Vec`, `Option`, `HashMap` are considered primitive-like regardless of their contents.
 pub fn is_primitive_like(ty: &Type) -> bool {
     is_primitive_or_known_type(&extract_type_name(ty).unwrap_or_default())
-}
-
-/// Names whose default below is the value of an ecosystem type (SeaORM /
-/// chrono / rust_decimal / uuid), which a crate may also define itself.
-const ECOSYSTEM_DEFAULT_NAMES: &[&str] = &[
-    "Decimal",
-    "Uuid",
-    "Date",
-    "Time",
-    "DateTime",
-    "DateTimeUtc",
-    "DateTimeWithTimeZone",
-    "NaiveDate",
-    "NaiveTime",
-    "NaiveDateTime",
-];
-
-/// Whether the path `segments`, written in the module `source_module` (the
-/// module of the struct the field is declared in), names an ecosystem type.
-/// A crate-local type of the same name (`struct Decimal(i64)`) advertised
-/// `"0"` / `"1970-01-01"` before. Without a known module (`source_module` is
-/// empty) the name is taken as the ecosystem type, as before.
-fn names_ecosystem_type(segments: &[String], source_module: &[String]) -> bool {
-    use super::module_scope::{Resolved, resolve_name};
-    let mut path = match resolve_name(segments, source_module) {
-        Resolved::Path(path) => path,
-        Resolved::Unknown => return true,
-    };
-    // A crate-internal re-export (`pub use rust_decimal::Decimal;` in
-    // `crate::types`, reached through `use crate::types::Decimal;`) names the
-    // external root one module further in: follow the chain (R34-SM4-L2).
-    for _ in 0..8 {
-        let Some((name, module)) = path
-            .split_last()
-            .filter(|(_, module)| module.first().map(String::as_str) == Some("crate"))
-        else {
-            break;
-        };
-        match resolve_name(std::slice::from_ref(name), module) {
-            Resolved::Path(next) if next != path => path = next,
-            _ => break,
-        }
-    }
-    matches!(
-        path.first().map(String::as_str),
-        Some("sea_orm" | "chrono" | "rust_decimal" | "uuid" | "time")
-    )
-}
-
-/// Get type-specific default value for simple #[serde(default)].
-///
-/// `source_module` is the absolute module (`crate::..`) the field's type is
-/// written in; it resolves an ecosystem-looking name (`Decimal`, `Date`).
-/// Empty when unknown.
-pub fn get_type_default(ty: &Type, source_module: &[String]) -> Option<serde_json::Value> {
-    match ty {
-        Type::Path(type_path) => type_path.path.segments.last().and_then(|segment| {
-            let name = segment.ident.to_string();
-            if ECOSYSTEM_DEFAULT_NAMES.contains(&name.as_str()) {
-                let segments: Vec<String> = type_path
-                    .path
-                    .segments
-                    .iter()
-                    .map(|segment| segment.ident.to_string())
-                    .collect();
-                if !names_ecosystem_type(&segments, source_module) {
-                    return None;
-                }
-            }
-            match name.as_str() {
-                "String" => Some(serde_json::Value::String(String::new())),
-                "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
-                | "u128" | "usize" => Some(serde_json::Value::Number(serde_json::Number::from(0))),
-                "Vec" | "VecDeque" | "HashSet" | "BTreeSet" => {
-                    Some(serde_json::Value::Array(Vec::new()))
-                }
-                "HashMap" | "BTreeMap" => Some(serde_json::Value::Object(serde_json::Map::new())),
-                // `rust_decimal` serializes as a string.
-                "Decimal" => Some(serde_json::Value::String("0".to_string())),
-                "f32" | "f64" => Some(serde_json::Value::Number(
-                    serde_json::Number::from_f64(0.0)
-                        .unwrap_or_else(|| serde_json::Number::from(0)),
-                )),
-                "bool" => Some(serde_json::Value::Bool(false)),
-                "Option" => Some(serde_json::Value::Null),
-                "Uuid" => Some(serde_json::Value::String(
-                    "00000000-0000-0000-0000-000000000000".to_string(),
-                )),
-                // chrono's epoch as each zone serializes it (`Local` depends
-                // on the machine: no documented value).
-                "DateTimeUtc" => Some(serde_json::Value::String(
-                    "1970-01-01T00:00:00Z".to_string(),
-                )),
-                "DateTimeWithTimeZone" => Some(serde_json::Value::String(
-                    "1970-01-01T00:00:00+00:00".to_string(),
-                )),
-                "DateTime" => match first_generic_type_arg(segment)
-                    .and_then(last_path_segment)
-                    .map(|zone| zone.ident.to_string())
-                    .as_deref()
-                {
-                    Some("Utc") => Some(serde_json::Value::String(
-                        "1970-01-01T00:00:00Z".to_string(),
-                    )),
-                    Some("FixedOffset") => Some(serde_json::Value::String(
-                        "1970-01-01T00:00:00+00:00".to_string(),
-                    )),
-                    // The bare name is SeaORM's `NaiveDateTime` alias.
-                    None if segment.arguments.is_none() => {
-                        Some(serde_json::Value::String("1970-01-01T00:00:00".to_string()))
-                    }
-                    _ => None,
-                },
-                "NaiveDateTime" => {
-                    Some(serde_json::Value::String("1970-01-01T00:00:00".to_string()))
-                }
-                // `Date` is SeaORM's `NaiveDate` alias.
-                "NaiveDate" | "Date" => Some(serde_json::Value::String("1970-01-01".to_string())),
-                "NaiveTime" | "Time" => Some(serde_json::Value::String("00:00:00".to_string())),
-                _ => None,
-            }
-        }),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
