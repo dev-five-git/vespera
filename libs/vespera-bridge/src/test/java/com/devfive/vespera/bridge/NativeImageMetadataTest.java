@@ -139,55 +139,142 @@ class NativeImageMetadataTest {
                 if (!name.endsWith(".rs") || name.endsWith("_tests.rs") || name.equals("tests.rs")) {
                     continue;
                 }
-                sources.put(file, stripLineComments(Files.readString(file, StandardCharsets.UTF_8)));
+                sources.put(file, stripComments(Files.readString(file, StandardCharsets.UTF_8)));
             }
         }
         assertFalse(sources.isEmpty(), "no Rust sources under " + JNI_SOURCES);
         return sources;
     }
 
-    /** Drops {@code //}, {@code ///} and {@code //!} comments (doc examples are not code). */
-    static String stripLineComments(String source) {
+    /**
+     * Drops the comments of a Rust source: {@code //}, {@code ///}, {@code //!} and
+     * nested {@code /* ... *}{@code /} (doc examples are not code). Everything else is
+     * kept verbatim, string, raw-string and char literals included, so the lookups in
+     * them still match; a block comment keeps its newlines, so the line structure does.
+     */
+    static String stripComments(String source) {
         StringBuilder out = new StringBuilder(source.length());
-        for (String line : source.split("\n", -1)) {
-            int comment = commentStart(line);
-            out.append(comment < 0 ? line : line.substring(0, comment)).append('\n');
+        int i = 0;
+        while (i < source.length()) {
+            if (source.startsWith("//", i)) {
+                int newline = source.indexOf('\n', i);
+                i = newline < 0 ? source.length() : newline;
+            } else if (source.startsWith("/*", i)) {
+                int end = blockCommentEnd(source, i);
+                for (int k = i; k < end; k++) {
+                    if (source.charAt(k) == '\n') {
+                        out.append('\n');
+                    }
+                }
+                i = end;
+            } else {
+                int end = literalEnd(source, i);
+                out.append(source, i, end);
+                i = end;
+            }
         }
         return out.toString();
     }
 
-    private static int commentStart(String line) {
-        boolean inString = false;
-        for (int i = 0; i < line.length(); i++) {
-            char c = line.charAt(i);
-            if (inString) {
-                if (c == '\\') {
-                    i++;
-                } else if (c == '"') {
-                    inString = false;
-                }
-            } else if (c == '"') {
-                inString = true;
-            } else if (c == '\'' && charLiteralEnd(line, i) > 0) {
-                // A char literal such as '"' or '\'' must not open a string.
-                i = charLiteralEnd(line, i);
-            } else if (c == '/' && i + 1 < line.length() && line.charAt(i + 1) == '/') {
-                return i;
+    /** End (exclusive) of the token that starts at {@code i}: a string, raw string or char literal, or one char. */
+    private static int literalEnd(String source, int i) {
+        char c = source.charAt(i);
+        char next = i + 1 < source.length() ? source.charAt(i + 1) : '\0';
+        boolean prefixable = !identifierBefore(source, i);
+        if (c == '"') {
+            return stringEnd(source, i);
+        }
+        if (c == 'b' && next == '"' && prefixable) {
+            return stringEnd(source, i + 1);
+        }
+        if ((c == 'r' || (c == 'b' && next == 'r')) && prefixable) {
+            int raw = rawStringEnd(source, c == 'b' ? i + 1 : i);
+            if (raw > 0) {
+                return raw;
             }
         }
-        return -1;
+        if (c == '\'') {
+            // A char literal such as '"' or '\'' must not open a string; a lifetime ('a) is one quote.
+            int close = charLiteralEnd(source, i);
+            return close > 0 ? close + 1 : i + 1;
+        }
+        return i + 1;
+    }
+
+    /** Whether the character before {@code i} could continue an identifier (so {@code r"} is not a raw string). */
+    private static boolean identifierBefore(String source, int i) {
+        if (i == 0) {
+            return false;
+        }
+        char previous = source.charAt(i - 1);
+        return Character.isLetterOrDigit(previous) || previous == '_';
+    }
+
+    /** End (exclusive) of the string literal whose opening quote is at {@code open}; escapes are skipped. */
+    private static int stringEnd(String source, int open) {
+        int j = open + 1;
+        while (j < source.length()) {
+            char c = source.charAt(j);
+            if (c == '\\') {
+                j += 2;
+            } else if (c == '"') {
+                return j + 1;
+            } else {
+                j++;
+            }
+        }
+        return source.length();
+    }
+
+    /**
+     * End (exclusive) of the raw string whose {@code r} is at index {@code r}, or
+     * {@code -1} when that {@code r} does not open one ({@code r#ident}, {@code r} as a name).
+     * A raw string ends at a quote followed by the same number of {@code #} as opened it.
+     */
+    private static int rawStringEnd(String source, int r) {
+        int j = r + 1;
+        while (j < source.length() && source.charAt(j) == '#') {
+            j++;
+        }
+        if (j >= source.length() || source.charAt(j) != '"') {
+            return -1;
+        }
+        String close = "\"" + "#".repeat(j - r - 1);
+        int end = source.indexOf(close, j + 1);
+        return end < 0 ? source.length() : end + close.length();
+    }
+
+    /** End (exclusive) of the block comment at {@code open}; block comments nest in Rust. */
+    private static int blockCommentEnd(String source, int open) {
+        int depth = 0;
+        int j = open;
+        while (j < source.length()) {
+            if (source.startsWith("/*", j)) {
+                depth++;
+                j += 2;
+            } else if (source.startsWith("*/", j)) {
+                depth--;
+                j += 2;
+                if (depth == 0) {
+                    return j;
+                }
+            } else {
+                j++;
+            }
+        }
+        return source.length();
     }
 
     /**
      * Index of the quote closing the char literal that opens at {@code open}, or
      * {@code -1} when the quote starts a lifetime ({@code 'a}) instead.
      */
-    private static int charLiteralEnd(String line, int open) {
-        if (open + 1 < line.length() && line.charAt(open + 1) == '\\') {
+    private static int charLiteralEnd(String source, int open) {
+        if (open + 1 < source.length() && source.charAt(open + 1) == '\\') {
             // Escapes (newline, quote, unicode-escape form): the closing quote follows the escape.
-            return line.indexOf('\'', open + 3);
+            return source.indexOf('\'', open + 3);
         }
-        return open + 2 < line.length() && line.charAt(open + 2) == '\'' ? open + 2 : -1;
+        return open + 2 < source.length() && source.charAt(open + 2) == '\'' ? open + 2 : -1;
     }
 
     /** JNI class names of every {@code throw_new} site, literal or through a {@code &JNIStr} const. */
@@ -353,7 +440,7 @@ class NativeImageMetadataTest {
         assertEquals(List.of("java.lang.Object"), parameterTypes("(Ljava/lang/Object;)Z"));
         assertEquals(List.of(), parameterTypes("()V"));
         assertEquals(List.of("java.lang.String[][]", "long"), parameterTypes("([[Ljava/lang/String;J)V"));
-        assertEquals("let x = \"a//b\"; \n", stripLineComments("let x = \"a//b\"; // c"));
+        assertEquals("let x = \"a//b\"; \n", stripComments("let x = \"a//b\"; // c\n"));
     }
 
     @Test
@@ -362,10 +449,41 @@ class NativeImageMetadataTest {
         // and the lookup on that line survives (the old scanner cut it at "http://).
         assertEquals(
                 "let c = '\"'; let u = \"http://x\"; f(); \n",
-                stripLineComments("let c = '\"'; let u = \"http://x\"; f(); // tail"));
-        assertEquals("let q = '\\''; g(); \n", stripLineComments("let q = '\\''; g(); // tail"));
-        assertEquals("let u = '\\u{1F600}'; \n", stripLineComments("let u = '\\u{1F600}'; // tail"));
-        assertEquals("fn f<'a>(x: &'a str) { \n", stripLineComments("fn f<'a>(x: &'a str) { // c"));
+                stripComments("let c = '\"'; let u = \"http://x\"; f(); // tail\n"));
+        assertEquals("let q = '\\''; g(); \n", stripComments("let q = '\\''; g(); // tail\n"));
+        assertEquals("let u = '\\u{1F600}'; \n", stripComments("let u = '\\u{1F600}'; // tail\n"));
+        assertEquals("fn f<'a>(x: &'a str) { \n", stripComments("fn f<'a>(x: &'a str) { // c\n"));
+    }
+
+    @Test
+    void blockCommentsAreDroppedEvenWhenTheyHideALookupOrAQuote() {
+        assertEquals("a  b", stripComments("a /* x */ b"));
+        // A line comment inside a block comment does not end it, and a block comment inside a string is text.
+        assertEquals("f();  g();", stripComments("f(); /* // not code */ g();"));
+        assertEquals("let s = \"/* kept */\";", stripComments("let s = \"/* kept */\";"));
+        // Newlines inside a block comment survive, so the line structure does.
+        assertEquals("a \n b", stripComments("a /* x\n y */ b"));
+        // Block comments nest in Rust.
+        assertEquals("x  y", stripComments("x /* a /* b */ c */ y"));
+        // A quote inside a block comment does not open a string.
+        assertEquals(" f();", stripComments("/* \" */ f();"));
+        // A lookup that only sits in a block comment is not code; one outside it still is.
+        String commented = "/* env.throw_new(jni_str!(\"java/io/Hidden\"), \"x\") */";
+        assertFalse(CLASS_LITERAL.matcher(stripComments(commented)).find());
+        assertTrue(CLASS_LITERAL.matcher(stripComments("/* note */ jni_str!(\"java/io/Shown\")")).find());
+    }
+
+    @Test
+    void rawStringsAreLiteralsAndRawIdentifiersAreNot() {
+        // Quotes and comment markers inside a raw string neither close it nor start a comment.
+        assertEquals("let s = r#\"a \"// b\" /* c */\"#; \n",
+                stripComments("let s = r#\"a \"// b\" /* c */\"#; // tail\n"));
+        assertEquals("let b = br\"x//y\"; \n", stripComments("let b = br\"x//y\"; // z\n"));
+        assertEquals("let t = r\"/*\"; \n", stripComments("let t = r\"/*\"; // z\n"));
+        assertEquals("let q = b\"//\"; \n", stripComments("let q = b\"//\"; // c\n"));
+        // r#ident and a name ending in r or b are not raw-string prefixes.
+        assertEquals("let r#type = 1; let bar = r; \n",
+                stripComments("let r#type = 1; let bar = r; // c\n"));
     }
 
     @Test

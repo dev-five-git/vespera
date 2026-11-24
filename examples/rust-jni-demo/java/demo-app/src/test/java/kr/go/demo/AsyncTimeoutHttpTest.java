@@ -86,7 +86,20 @@ class AsyncTimeoutHttpTest extends AbstractVesperaHttpIntegrationTest {
      * is always counted while it reads the value.
      */
     private long asyncInFlight(String requestId) throws Exception {
-        return Long.parseLong(get("/diag/async-in-flight", requestId).body());
+        // The probe is ASYNC too, so on a slow run it can outlive the request timeout and get
+        // the timeout's 503 (not a number): retry until a 200 with the count comes back.
+        long deadline = System.nanoTime() + 10_000_000_000L;
+        while (true) {
+            HttpResponse<String> response = get("/diag/async-in-flight", requestId);
+            if (response.statusCode() == 200) {
+                return Long.parseLong(response.body());
+            }
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("the in-flight probe kept failing: " + response.statusCode()
+                        + " " + response.body());
+            }
+            Thread.sleep(10);
+        }
     }
 
     /**

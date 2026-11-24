@@ -241,25 +241,52 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
      * a pointer (an example, a default, an enum member, a description) is left alone.
      */
     private static void rewriteRefs(JsonNode node, Map<String, String> renames) {
+        rewriteRefs(node, renames, false);
+    }
+
+    /**
+     * Keys whose value maps names (a schema, a property, a component, a path, ...)
+     * to schema-like objects: the keys there are names, not keywords, so a property
+     * called {@code example} or {@code default} still gets its {@code $ref}s rewritten.
+     */
+    private static final Set<String> NAME_MAPS = Set.of("properties", "patternProperties", "dependentSchemas",
+            "dependencies", "$defs", "definitions", "schemas", "responses", "parameters", "examples", "requestBodies",
+            "headers", "securitySchemes", "links", "callbacks", "pathItems", "paths", "webhooks", "content",
+            "encoding");
+
+    /**
+     * Keys whose value is data (an example, a default, an enum or const member, an
+     * extension): nothing inside them is a pointer. {@code examples} is data only as
+     * an array (a JSON Schema list); as an object it is a {@link #NAME_MAPS name map}.
+     */
+    private static boolean isDataKeyword(String key, JsonNode value) {
+        return "example".equals(key) || "default".equals(key) || "enum".equals(key) || "const".equals(key)
+                || "value".equals(key) || key.startsWith("x-")
+                || ("examples".equals(key) && value.isArray());
+    }
+
+    private static void rewriteRefs(JsonNode node, Map<String, String> renames, boolean keysAreNames) {
         if (node instanceof ObjectNode object) {
             for (Map.Entry<String, JsonNode> entry : object.properties()) {
+                String key = entry.getKey();
                 JsonNode value = entry.getValue();
-                if (value.isTextual() && "$ref".equals(entry.getKey())) {
+                if (keysAreNames) {
+                    rewriteRefs(value, renames, false);
+                } else if (value.isTextual() && "$ref".equals(key)) {
                     entry.setValue(renamedPointer(value, renames));
-                } else if ("discriminator".equals(entry.getKey())
-                        && value.get("mapping") instanceof ObjectNode mapping) {
+                } else if ("discriminator".equals(key) && value.get("mapping") instanceof ObjectNode mapping) {
                     for (Map.Entry<String, JsonNode> target : mapping.properties()) {
                         if (target.getValue().isTextual()) {
                             target.setValue(renamedPointer(target.getValue(), renames));
                         }
                     }
-                } else {
-                    rewriteRefs(value, renames);
+                } else if (!isDataKeyword(key, value)) {
+                    rewriteRefs(value, renames, NAME_MAPS.contains(key));
                 }
             }
         } else if (node instanceof ArrayNode array) {
             for (JsonNode element : array) {
-                rewriteRefs(element, renames);
+                rewriteRefs(element, renames, false);
             }
         }
     }

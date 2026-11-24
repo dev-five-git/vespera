@@ -34,7 +34,7 @@ import java.util.concurrent.ForkJoinPool;
  * injected by this controller; routing transparently mirrors the
  * Rust router.
  *
- * <p>Per request, the controller delegates two decisions to the
+ * <p>Per request, the controller delegates three decisions to the
  * configured strategies:
  *
  * <ol>
@@ -374,7 +374,7 @@ public class VesperaProxyController {
         if (effectiveMode == DispatchMode.BIDIRECTIONAL_STREAMING) {
             InputStream requestBody = streamingRequestBody(request, shape);
             exchange.reachedRust = true;
-            dispatchBidirectional(request, response, appName, method, path, query,
+            dispatchBidirectional(request, response, exchange, appName, method, path, query,
                     forwardedHeaders(request, null, exchange), requestBody);
             return null;
         }
@@ -839,7 +839,7 @@ public class VesperaProxyController {
      * both Rust and JVM sides.
      */
     private void dispatchBidirectional(
-            HttpServletRequest request, HttpServletResponse response,
+            HttpServletRequest request, ProxyServletResponse response, ProxyExchange exchange,
             String appName, String method, String path, String query,
             VesperaBridge.HeaderSource headers, InputStream servletBody) throws IOException {
         byte[] wireHeader = VesperaBridge.encodeRequestHeader(
@@ -856,6 +856,20 @@ public class VesperaProxyController {
                         WireResponseWriter.applyDecodedHeader(headerBytes, response, method)),
                 requestBody,
                 bodyOut);
+        streamBidirectional(stream, response, requestBody, exchange);
+    }
+
+    /**
+     * Run the bidirectional {@code stream}, then flush. A failure after the Rust
+     * header was applied (a panic, a body error) is answered as the proxy's
+     * {@code 500} once the request body is detached, and the exchange is completed
+     * with that failure as its cause (the one WARN line carries it). When the
+     * response is already committed the failure is rethrown, and the caller's
+     * catch completes the exchange with it.
+     */
+    static void streamBidirectional(DirectModeDispatcher.HeaderFirstStream stream,
+            ProxyServletResponse response, GatedRequestInputStream requestBody, ProxyExchange exchange)
+            throws IOException {
         IOException aborted = null;
         boolean detached;
         try {
@@ -867,13 +881,14 @@ public class VesperaProxyController {
         } finally {
             detached = detachRequestBody(requestBody, response);
         }
-        if (aborted != null) {
-            if (!ProxyErrors.writeStreamAbort(response, aborted, detached)) {
-                throw aborted;
-            }
+        if (aborted == null) {
+            response.getOutputStream().flush();
             return;
         }
-        response.getOutputStream().flush();
+        if (!ProxyErrors.writeStreamAbort(response, aborted, detached)) {
+            throw aborted;
+        }
+        exchange.complete(response.getStatus(), response.panicked(), aborted);
     }
 
     /**

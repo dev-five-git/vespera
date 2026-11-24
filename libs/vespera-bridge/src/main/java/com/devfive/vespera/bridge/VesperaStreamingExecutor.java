@@ -156,8 +156,8 @@ public final class VesperaStreamingExecutor implements AutoCloseable {
      * never runs for a disconnected client.
      *
      * <p>A queued task can also be dropped unrun by the pool: when a thread
-     * start fails (thread exhaustion) and no idle or starting thread is left
-     * to take it. Its slot is then freed and {@link #rejection()} completes
+     * start fails (thread exhaustion) and no pool thread is left at all
+     * (busy ones still take the queue when their streams end). Its slot is then freed and {@link #rejection()} completes
      * with the failure, so the caller answers {@code 503} instead of waiting
      * for a thread that may never start.
      */
