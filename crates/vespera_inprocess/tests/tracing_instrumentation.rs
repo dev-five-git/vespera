@@ -365,7 +365,9 @@ fn unknown_app_is_a_rejected_request() {
     });
     assert_eq!(status_of(&resp), 404);
     let span = capture.dispatch_span();
-    // The raw client value of an app that did not resolve is never recorded.
+    // Only the span's `app` field withholds the raw client value of an app
+    // that did not resolve; the WARN event's detail text (the 404 "no app
+    // registered with name ..." message) does name it.
     assert_eq!(field(&span, "app"), "<unset>");
     assert_eq!(field(&span, "status"), "404");
     assert_eq!(

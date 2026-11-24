@@ -434,11 +434,15 @@ pub fn on_shared_runtime(hook: RuntimeHook) {
 }
 
 /// [`on_shared_runtime`], reporting whether the hook was accepted.  `false`
-/// once [`shutdown_runtime`] has closed the runtime: the hook is dropped and
-/// never runs, so a caller that claimed its work (cron's per-job claims)
-/// must release it.
+/// once [`shutdown_runtime`] has closed the runtime, and `false` once the
+/// runtime build has failed (no flush would ever run the hook): the hook is
+/// dropped and never runs, so a caller that claimed its work (cron's per-job
+/// claims) must release it.
 #[must_use]
 pub fn try_on_shared_runtime(hook: RuntimeHook) -> bool {
+    if matches!(RUNTIME.get(), Some(None)) {
+        return false;
+    }
     let accepted = lock_hooks().push(hook);
     if accepted {
         HOOKS_PENDING.store(true, Ordering::SeqCst);
@@ -451,7 +455,8 @@ pub fn try_on_shared_runtime(hook: RuntimeHook) -> bool {
     accepted
 }
 
-/// Build the runtime now when hooks wait for it.  Returns whether it runs.
+/// Build the runtime now when hooks wait for it.  Returns whether it runs
+/// (`false` as well when the build has already failed).
 pub fn start_runtime_for_hooks() -> bool {
     HOOKS_PENDING.load(Ordering::SeqCst) && runtime().is_some()
 }
@@ -561,6 +566,42 @@ mod tests {
         )));
         on_shared_runtime(Box::new(|_| RAN.store(true, Ordering::SeqCst)));
         assert!(!start_runtime_for_hooks());
+        assert!(!RAN.load(Ordering::SeqCst), "a refused hook never runs");
+    }
+
+    /// R41-IP1-L1.  A runtime build that failed (`RUNTIME` settled as `None`
+    /// while the gate stays open) refuses a hook: nothing would ever flush it,
+    /// so the caller (cron) must take its error path, not report it accepted.
+    /// Child process: it settles the process-global runtime slot.
+    #[test]
+    #[cfg_attr(miri, ignore = "re-executes the test binary as a child process")]
+    fn hooks_are_refused_after_a_failed_build() {
+        static RAN: AtomicBool = AtomicBool::new(false);
+        const CHILD_ENV: &str = "VESPERA_RUNTIME_BUILD_FAILED_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            crate::test_child::run_isolated(
+                "runtime::tests::hooks_are_refused_after_a_failed_build",
+                CHILD_ENV,
+                &[],
+                &[],
+            );
+            return;
+        }
+        // The build failed: the slot is settled as unbuilt, the gate is open.
+        assert!(
+            RUNTIME.set(None).is_ok(),
+            "fresh process: nothing was built"
+        );
+        assert!(
+            !try_on_shared_runtime(Box::new(|_| RAN.store(true, Ordering::SeqCst))),
+            "a failed build refuses the hook"
+        );
+        assert!(
+            lock_hooks().pending.is_empty(),
+            "no hook is queued that no flush would take"
+        );
+        assert!(!start_runtime_for_hooks());
+        assert!(runtime().is_none());
         assert!(!RAN.load(Ordering::SeqCst), "a refused hook never runs");
     }
 }

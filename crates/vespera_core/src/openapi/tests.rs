@@ -828,6 +828,21 @@ fn merge_adopts_webhooks_when_self_has_none() {
     assert!(base.webhooks.unwrap().contains_key("hook"));
 }
 
+/// R41-CJ1-L1: an empty `webhooks` map on the other side adds nothing, so a
+/// `None` receiver stays `None` (no empty `webhooks` object is serialized).
+#[test]
+fn merge_ignores_an_empty_webhooks_map_from_other() {
+    let mut base = create_base_openapi();
+    let mut other = create_base_openapi();
+    other.webhooks = Some(BTreeMap::new());
+
+    base.merge(other);
+
+    assert!(base.webhooks.is_none(), "an empty map must not be adopted");
+    let value = serde_json::to_value(&base).unwrap();
+    assert!(value.get("webhooks").is_none());
+}
+
 /// Round 14: a `3.0.x` document's body is read into 3.1 shapes, so its
 /// version is read as `3.1.0` too (a hand-built `3.0.x` still serializes).
 #[rstest]

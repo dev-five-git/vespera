@@ -20,6 +20,12 @@ pub struct RequestEnvelope {
     /// UTF-8 text arrives as the bytes `63 61 66 E9`, not `63 61 66 C3 A9`.
     /// A value with a `char` above `U+00FF` keeps its UTF-8 bytes. Send
     /// ASCII header values when the exact bytes matter.
+    ///
+    /// Single value per name: a map cannot carry a repeated header, so when a
+    /// name repeats the last value wins (serde keeps the last entry). The
+    /// binary wire API keeps every repeat (`header_read.rs`). Changing this
+    /// field's type would be a semver break, so the limit is documented here
+    /// instead.
     #[serde(default)]
     pub headers: HashMap<String, String>,
     #[serde(default)]
