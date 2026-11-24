@@ -1189,8 +1189,10 @@ pub async fn hourly_report() {
 
 1. `#[cron("...")]` registers the job at compile time (like `#[route]`)
 2. `vespera!()` auto-discovers all registered cron jobs — no extra parameters needed
-3. A background scheduler spawns via `tokio::spawn` when the app starts (once
-   per process, however often the router is built)
+3. The scheduler starts when the app starts, once per process however often the
+   router is built: the jobs spawn onto the ambient Tokio runtime; in a JNI or
+   `vespera_init` library they go to the shared host runtime; anywhere else (for
+   example a plain `#[test]`) they run on a dedicated `vespera-cron` thread
 4. A job whose expression never fires again (for example a fixed year that has
    passed) stops, logging a `vespera:` line to stderr that names the job and
    its expression (a WARN event on target `vespera::cron` with the `tracing`

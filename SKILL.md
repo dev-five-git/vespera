@@ -431,7 +431,7 @@ Every variable in this table treats a value that is set but empty as unset.
 > 
 > Benefits:
 > - Single source of truth (your model)
-> - Auto-generated `From` impl for easy conversion
+> - Auto-generated `From` impl for easy conversion (sources without relation fields; a SeaORM source with relations gets an async `from_model` instead)
 > - Automatic type resolution (enums, custom types → absolute paths)
 > - SeaORM relation support (HasOne, BelongsTo, HasMany)
 > - No manual field synchronization
@@ -559,7 +559,7 @@ The macro reads the source file at compile time - no special annotations needed 
 
 ### Auto-Generated From Impl
 
-When `add` is NOT used, `schema_type!` generates a `From` impl for easy conversion:
+When `add` is NOT used and the source has no relation fields (and every source field is readable from the call site), `schema_type!` generates a `From` impl for easy conversion:
 
 ```rust
 // This:
@@ -579,7 +579,7 @@ let model: Model = db.find_user(id).await?;
 Json(model.into())  // Easy conversion!
 ```
 
-**Note:** `From` is NOT generated when `add` is used (can't auto-populate added fields).
+**Note:** `From` is NOT generated when `add` is used (can't auto-populate added fields), or when the source has relation fields (HasOne / BelongsTo / HasMany). A SeaORM source with relations gets instead `async fn from_model(model, db: &DatabaseConnection) -> Result<Self, DbErr>`, which loads the relations: `UserResponse::from_model(model, &db).await?`.
 
 ### Parameters
 

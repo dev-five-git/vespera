@@ -39,11 +39,12 @@
 # merge commit of the "Update Versions" PR, which is usually but not always the
 # commit this workflow runs on, so the commit is read from the published crate
 # tarballs' .cargo_vcs_info.json (all of them must agree; HEAD only when no
-# crate was published) and the SBOMs are generated in a temporary worktree of
+# crate was published, and the run fails when crates were published but none
+# could be verified) and the SBOMs are generated in a temporary worktree of
 # it. Every collected crate must have been packaged from that commit.
 set -euo pipefail
 
-usage() { sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 registry_version=
 if [ "${1:-}" = --from-registries ]; then
   [ "$#" -eq 3 ] || usage
@@ -136,6 +137,7 @@ vcs_sha_of() { # <crate file>: the commit `cargo package` recorded (empty if non
 # Done BEFORE the released commit is chosen: in a normal release that commit
 # is read from these very tarballs.
 declare -A crate_file=() crate_version=() crate_vcs=()
+crates_published=0
 head_metadata=
 if [ -z "$registry_version" ]; then
   head_metadata=$(cargo metadata --manifest-path "$root/Cargo.toml" --no-deps --format-version 1 2>/dev/null) ||
@@ -146,6 +148,7 @@ for p in "${paths[@]}"; do
     crates/*/Cargo.toml) ;;
     *) continue ;;
   esac
+  crates_published=$((crates_published + 1))
   crate=${p#crates/}
   crate=${crate%/Cargo.toml}
   # Any other crates/ manifest (a name with a dot, a nested path) is not
@@ -251,7 +254,11 @@ else
     sha=${crate_vcs[$crate]}
   done
   if [ -z "$sha" ]; then
-    echo "::notice::no published crate to read the released commit from; using HEAD"
+    if [ "$crates_published" -gt 0 ]; then
+      echo "::error::$crates_published crate(s) published but none verified: no released commit to read; not attesting the JARs or SBOMs" >&2
+      exit 1
+    fi
+    echo "::notice::no crate was published in this run; using HEAD"
     sha=$head_sha
   fi
 fi
