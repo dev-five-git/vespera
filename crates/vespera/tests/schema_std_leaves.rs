@@ -17,8 +17,11 @@ pub struct Job {
 pub struct Queue {
     pub priorities: std::collections::BinaryHeap<u32>,
     pub jobs: std::collections::BinaryHeap<Job>,
+    pub queue: std::collections::VecDeque<u32>,
+    pub pending: std::collections::VecDeque<Job>,
     pub extra: Map<String, u8>,
     pub any: Map<String, Value>,
+    pub by_id: Map<String, Job>,
 }
 
 fn property(name: &str) -> Value {
@@ -47,10 +50,40 @@ fn binary_heap_of_a_struct_documents_an_array_of_its_reference() {
 }
 
 #[test]
+fn vecdeque_documents_like_binary_heap() {
+    let queue = property("queue");
+    assert_eq!(queue["type"], "array");
+    assert_eq!(queue["items"]["type"], "integer");
+    let pending = property("pending");
+    assert_eq!(pending["type"], "array");
+    assert!(
+        pending["items"]["$ref"]
+            .as_str()
+            .is_some_and(|reference| reference.ends_with("Job")),
+        "{pending}"
+    );
+}
+
+#[test]
 fn bare_serde_json_map_documents_a_json_object() {
-    for name in ["extra", "any"] {
-        let field = property(name);
-        assert_eq!(field["type"], "object", "{name}: {field}");
-        assert_eq!(field["additionalProperties"], true, "{name}: {field}");
-    }
+    let any = property("any");
+    assert_eq!(any["type"], "object", "{any}");
+    assert_eq!(any["additionalProperties"], true, "{any}");
+    // A typed value is the member schema: `u8` is a `uint8` integer.
+    let extra = property("extra");
+    assert_eq!(extra["type"], "object", "{extra}");
+    assert_eq!(extra["additionalProperties"]["type"], "integer", "{extra}");
+    assert_eq!(extra["additionalProperties"]["format"], "uint8", "{extra}");
+}
+
+#[test]
+fn serde_json_map_of_a_struct_documents_a_ref_member() {
+    let by_id = property("by_id");
+    assert_eq!(by_id["type"], "object", "{by_id}");
+    assert!(
+        by_id["additionalProperties"]["$ref"]
+            .as_str()
+            .is_some_and(|reference| reference.ends_with("Job")),
+        "{by_id}"
+    );
 }

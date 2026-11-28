@@ -13,18 +13,19 @@ parser/
 ├── schema/                         # Rust types → JSON Schema (see below)
 ├── parameters.rs + parameters/     # Handler params → OpenAPI Parameters
 │                                   #   parameters/{header,path,query,shared}.rs
-│                                   #   + parameters/tests_shapes.rs
+│                                   #   + parameters/{tests_groups,tests_shapes}.rs
 ├── operation.rs + operation/       # Function → OpenAPI Operation
 │                                   #   operation/{tests,tests_extractor_wrappers,tests_form_query,
 │                                   #   tests_request_shapes,tests_status,tests_validated}.rs
 ├── request_body.rs                 # Json<T> / Form<T> / TypedMultipart<T> / raw bodies → requestBody
-├── response.rs + response/         # Return type → responses (response/{tests,tests_parts}.rs)
-├── result_alias.rs + result_alias/ # Return-type alias expansion (type ApiResult<T> = ..)
+├── response.rs + response/         # Return type → responses (response/{tests,tests_names,tests_parts}.rs)
+├── result_alias.rs + result_alias/ # Return-type alias expansion (type ApiResult<T> = ..; result_alias/{expansion,imports}.rs + tests_*.rs)
 ├── path.rs                         # Path parameter extraction
 ├── extractors.rs                   # Validated<T> / Result / WithRejection / Cached unwrapping
 ├── extractor_validation.rs + extractor_validation/ # Compile-time Schema-backed extractor check
 │                                   #   (extractor_validation/{declaration,qualified,tests_scope}.rs)
 ├── is_keyword_type.rs              # Response keyword types (HeaderMap / StatusCode / CookieJar / Result; used by response.rs)
+├── type_groups.rs                  # Looks through Type::Group / Type::Paren (strip_type_groups, unwrap_option, ungroup_return)
 └── snapshots/                      # insta test snapshots
 ```
 
@@ -32,25 +33,25 @@ parser/
 parser/schema/
 ├── mod.rs                          # Re-exports the schema public API
 ├── type_schema.rs + type_schema/   # Type → SchemaRef
-│                                   #   type_schema/{conversion.rs + conversion/{schema_def,tests,
-│                                   #   tests_instances,time_schemas}.rs, generic_instances.rs, nullable.rs}
+│                                   #   type_schema/{conversion.rs + conversion/{json_paths,schema_def,tests,tests_arms,tests_const,
+│                                   #   tests_instances,tests_path_keyword,time_schemas,tuple_schema}.rs, generic_instances.rs, nullable.rs}
 ├── struct_schema.rs + struct_schema/ # Struct → JSON Schema
-│                                   #   struct_schema/{flatten,tests,tests_serde_fidelity,
+│                                   #   struct_schema/{flatten,tests,tests_option_output,tests_ref_escape,tests_serde_fidelity,
 │                                   #   tests_transparent,tests_wire_names,tests_wire_override}.rs
 ├── enum_schema.rs + enum_schema/   # Enum → JSON Schema
 │                                   #   enum_schema/{representations.rs + representations/
 │                                   #   {tests,tests_closed,tests_fidelity}.rs, unit.rs, variant.rs,
 │                                   #   tests_validate.rs}
 ├── serde_attrs.rs + serde_attrs/   # Serde attribute extraction
-│                                   #   serde_attrs/{codec,common,enum_repr,extract,fallback,rename_case}.rs
+│                                   #   serde_attrs/{codec,common,enum_repr,extract,fallback,rename_case}.rs (fallback/tests.rs)
 ├── garde_rules.rs + garde_rules/   # #[garde(..)] rules → JSON Schema keywords (garde_rules/tests.rs)
 ├── generics.rs                     # Generic type parameter substitution
-├── schema_attrs.rs                 # #[schema(...)] constraint extraction (incl. value_type)
+├── schema_attrs.rs + schema_attrs/   # #[schema(...)] constraint extraction (incl. value_type; schema_attrs/tests_bounds.rs)
 ├── scoped_ident.rs                 # Module-scoped keys for renames sharing an ident
 ├── wire_override.rs                # value_type / serde with / into / from schema overrides
 ├── embedded.rs + embedded/         # Reopen embedded objects for flatten / tagged payloads
 │                                   #   (embedded/tests.rs)
-├── request_view.rs + request_view/ # {Name}Input request views (request_view/tests.rs)
+├── request_view.rs + request_view/ # {Name}Input request views (request_view/{idents,input_map,tests,tests_external,tests_field_type,tests_groups}.rs)
 └── snapshots/                      # insta test snapshots
 ```
 

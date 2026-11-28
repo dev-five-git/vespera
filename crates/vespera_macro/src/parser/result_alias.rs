@@ -972,3 +972,6 @@ mod tests_reexport;
 
 #[cfg(test)]
 mod tests_test_scope;
+
+#[cfg(test)]
+mod tests_groups;

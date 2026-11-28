@@ -100,9 +100,76 @@ fn leaf_of_smart_pointers_and_collections_unwraps_inner(#[case] src: &str) {
 #[case::path_buf("std::path::PathBuf")]
 #[case::duration("std::time::Duration")]
 fn builtin_wrapped_leaves_need_no_assertion(#[case] src: &str) {
-    for (_, ident) in collect_leaf_custom_types(&parse_ty(src)) {
+    let leaves = collect_leaf_custom_types(&parse_ty(src));
+    assert!(!leaves.is_empty(), "{src} has no leaf to check");
+    for (_, ident) in leaves {
         assert!(is_builtin_openapi_type(&ident), "{src}: {ident}");
     }
+}
+
+fn import_yes() -> bool {
+    true
+}
+
+fn import_no() -> bool {
+    false
+}
+
+/// The `const _` assertion blocks `push_leaf_assertions` emits for `src`
+/// (`import` says whether the file imports a bare `Map` from serde_json).
+fn pushed_assertions(src: &str, import: bool) -> String {
+    let bare_map: BareMapImport =
+        std::cell::LazyCell::new(if import { import_yes } else { import_no });
+    let mut blocks = Vec::new();
+    push_leaf_assertions(
+        &parse_ty(src),
+        proc_macro2::Span::call_site(),
+        &HashSet::new(),
+        &bare_map,
+        &mut blocks,
+    );
+    blocks.iter().map(ToString::to_string).collect()
+}
+
+/// Round 45: a bare `Map` is the serde_json object only when the file imports
+/// it from serde_json. A user `Map` keeps its `Schema` assertion, so a
+/// forgotten derive is a build break (MR4-M1).
+#[test]
+fn bare_map_without_a_serde_json_import_is_asserted() {
+    let pushed = pushed_assertions("Map", false);
+    assert!(
+        pushed.contains("__vespera_assert_schema :: < Map >"),
+        "{pushed}"
+    );
+}
+
+#[test]
+fn bare_map_with_a_serde_json_import_is_exempt() {
+    assert_eq!(pushed_assertions("Map", true), "");
+    assert_eq!(pushed_assertions("Map<String, Value>", true), "");
+}
+
+/// A serde_json `Map<String, V>` documents `V`, so `V` is asserted in its
+/// place, through a bare (imported) or a qualified path.
+#[test]
+fn serde_json_map_asserts_its_value_type() {
+    let imported = pushed_assertions("Map<String, Wire>", true);
+    assert!(imported.contains("< Wire >"), "{imported}");
+    assert!(!imported.contains("Map"), "{imported}");
+    let qualified = pushed_assertions("serde_json::Map<String, Wire>", false);
+    assert!(qualified.contains("< Wire >"), "{qualified}");
+    assert!(!qualified.contains("Map"), "{qualified}");
+}
+
+#[test]
+fn serde_json_map_of_a_user_module_value_asserts_the_user_type() {
+    let pushed = pushed_assertions("serde_json::Map<String, crate::models::Job>", false);
+    assert!(pushed.contains("crate :: models :: Job"), "{pushed}");
+}
+
+#[test]
+fn qualified_map_without_a_value_type_asserts_nothing() {
+    assert_eq!(pushed_assertions("serde_json::Map", false), "");
 }
 
 #[test]

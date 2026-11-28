@@ -28,6 +28,11 @@ pub(super) fn has_alias_position(ty: &Type) -> bool {
             .segments
             .last()
             .is_some_and(nested_args_have_alias),
+        // `(T)` and a `$t:ty` fragment are the type they wrap (see
+        // `type_groups`), so an alias inside them is one of the positions.
+        Type::Paren(syn::TypeParen { elem, .. }) | Type::Group(syn::TypeGroup { elem, .. }) => {
+            has_alias_position(elem)
+        }
         _ => false,
     }
 }
@@ -128,6 +133,9 @@ fn expand_position(
             for elem in &mut tuple.elems {
                 expand_position(elem, scope, src_dir, depth + 1, active);
             }
+        }
+        Type::Paren(syn::TypeParen { elem, .. }) | Type::Group(syn::TypeGroup { elem, .. }) => {
+            expand_position(elem, scope, src_dir, depth + 1, active);
         }
         Type::Path(type_path) => {
             if let Some(segment) = type_path.path.segments.last_mut()

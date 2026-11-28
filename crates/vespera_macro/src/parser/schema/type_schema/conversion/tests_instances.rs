@@ -229,7 +229,9 @@ fn polymorphic_recursion_is_capped_per_top_level_instance() {
 }
 
 /// `serde_json::Map` (any path through a `serde_json` segment) is a JSON
-/// object of any members, not an unknown named type.
+/// object whose members are the value type: any JSON value for `Value` (or no
+/// value type written, or the value written through parentheses), not an
+/// unknown named type.
 #[test]
 fn serde_json_map_is_an_object_of_any_members() {
     take_materialized();
@@ -237,9 +239,8 @@ fn serde_json_map_is_an_object_of_any_members() {
     let defs: HashMap<String, String> = HashMap::new();
     for src in [
         "serde_json::Map<String, serde_json::Value>",
-        "vespera::serde_json::Map<String, u8>",
+        "serde_json::Map<String, (serde_json::Value)>",
         "::serde_json::Map",
-        "serde_json::map::Map<String, u8>",
     ] {
         let ty: Type = syn::parse_str(src).unwrap();
         let schema = serde_json::to_value(parse_type_to_schema_ref(&ty, &known, &defs)).unwrap();
@@ -249,6 +250,37 @@ fn serde_json_map_is_an_object_of_any_members() {
             "{src}"
         );
     }
+    assert!(take_materialized().is_empty(), "no component for a builtin");
+}
+
+/// A `serde_json::Map<String, V>` with a concrete `V` documents `V`'s schema as
+/// its members (`u8` is a `uint8` integer), through any spelling of the path.
+#[test]
+fn serde_json_map_documents_its_value_type() {
+    take_materialized();
+    let known: HashSet<String> = HashSet::new();
+    let defs: HashMap<String, String> = HashMap::new();
+    for src in [
+        "vespera::serde_json::Map<String, u8>",
+        "serde_json::map::Map<String, u8>",
+        "serde_json::Map<String, (u8)>",
+    ] {
+        let ty: Type = syn::parse_str(src).unwrap();
+        let schema = serde_json::to_value(parse_type_to_schema_ref(&ty, &known, &defs)).unwrap();
+        assert_eq!(schema["type"], "object", "{src}: {schema}");
+        assert_eq!(
+            schema["additionalProperties"]["type"], "integer",
+            "{src}: {schema}"
+        );
+        assert_eq!(
+            schema["additionalProperties"]["format"], "uint8",
+            "{src}: {schema}"
+        );
+    }
+    // A value that is no path (an array) is its own schema too.
+    let ty: Type = syn::parse_str("serde_json::Map<String, [u8; 2]>").unwrap();
+    let schema = serde_json::to_value(parse_type_to_schema_ref(&ty, &known, &defs)).unwrap();
+    assert_eq!(schema["additionalProperties"]["type"], "array", "{schema}");
     assert!(take_materialized().is_empty(), "no component for a builtin");
 }
 

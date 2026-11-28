@@ -481,9 +481,14 @@ fn parse_type_impl(
                 return SchemaRef::Inline(Box::default());
             }
             if is_serde_json_map_path(path, known_schemas) {
-                // `serde_json::Map<String, V>` is a JSON object of any members.
+                // `serde_json::Map<String, V>` is a JSON object whose members
+                // are `V`; a `Value` member (or none written) is any JSON value.
                 return SchemaRef::Inline(Box::new(Schema {
-                    additional_properties: Some(AdditionalProperties::Bool(true)),
+                    additional_properties: Some(serde_json_map_members(
+                        &segment.arguments,
+                        known_schemas,
+                        struct_definitions,
+                    )),
                     ..Schema::new(SchemaType::Object)
                 }));
             }
@@ -907,6 +912,45 @@ fn first_type_arg(args: &syn::AngleBracketedGenericArguments) -> Option<&Type> {
         syn::GenericArgument::Type(ty) => Some(ty),
         _ => None,
     })
+}
+
+/// The `additionalProperties` of a `serde_json::Map<String, V>`: `V`'s schema,
+/// or `true` (any member) when `V` is `serde_json::Value` or no value type is
+/// written.
+fn serde_json_map_members(
+    arguments: &syn::PathArguments,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> AdditionalProperties {
+    let syn::PathArguments::AngleBracketed(args) = arguments else {
+        return AdditionalProperties::Bool(true);
+    };
+    let value = args
+        .args
+        .iter()
+        .filter_map(|arg| match arg {
+            syn::GenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        })
+        .nth(1);
+    match value {
+        Some(ty) if !is_json_value_type(ty, known_schemas) => AdditionalProperties::Schema(
+            parse_type_to_schema_ref(ty, known_schemas, struct_definitions),
+        ),
+        _ => AdditionalProperties::Bool(true),
+    }
+}
+
+/// Whether `ty` (written through any groups) names `serde_json::Value`.
+fn is_json_value_type(ty: &Type, known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>) -> bool {
+    match crate::parser::type_groups::strip_type_groups(ty) {
+        Type::Path(type_path) => type_path
+            .path
+            .segments
+            .last()
+            .is_some_and(|last| is_json_value_path(&type_path.path, last, known_schemas)),
+        _ => false,
+    }
 }
 
 /// `true` for the bare unsigned primitive integer idents (`u8`..`u128`, `usize`).
