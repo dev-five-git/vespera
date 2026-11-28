@@ -71,7 +71,8 @@ fn expr_attrs_of_a_verbatim_expression_is_empty() {
 
 /// The `cfg(test)` / `cfg(not(test))` twins of one route `health`, as the
 /// stub's crate file declares them.
-const TWIN_HEALTH: &str = "#[cfg(test)]\n#[route(get, path = \"/stub\")]\npub async fn health() -> u8 { 0 }\n\
+const TWIN_HEALTH: &str = "pub const LIMIT: u8 = 1;
+\n     #[cfg(test)]\n#[route(get, path = \"/stub\")]\npub async fn health() -> u8 { 0 }\n\
      #[cfg(not(test))]\n#[route(get)]\npub async fn health() -> u8 { 0 }\n";
 
 /// Both compiler-argv forms the macro can see: the `--test` harness build and

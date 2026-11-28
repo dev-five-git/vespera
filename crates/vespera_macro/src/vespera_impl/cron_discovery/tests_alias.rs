@@ -261,6 +261,10 @@ fn parent_alias_imported_by_name_reaches_a_file_module(#[case] import: &str, #[c
     r#"use vespera::cron; mod jobs { use super::cron; #[cron("1 * * * * *")] pub async fn tick() {} }"#,
     &[("jobs", "tick", "1 * * * * *")]
 )]
+#[case::vespera_parent_cron_renamed_to_itself(
+    r#"use vespera::cron; mod jobs { use super::cron as cron; #[cron("1 * * * * *")] pub async fn tick() {} }"#,
+    &[("jobs", "tick", "1 * * * * *")]
+)]
 #[case::vespera_parent_cron_renamed(
     r#"use vespera::cron; mod jobs { use super::cron as job; #[job("1 * * * * *")] pub async fn tick() {} }"#,
     &[("jobs", "tick", "1 * * * * *")]
