@@ -109,3 +109,59 @@ fn request_view_stays_nullable(#[case] field: &str) {
         "{field}"
     );
 }
+
+/// A `$t:ty` fragment (`Type::Group`) around the type.
+fn invisible(ty: &str) -> syn::Type {
+    syn::Type::Group(syn::TypeGroup {
+        attrs: Vec::new(),
+        group_token: syn::token::Group::default(),
+        elem: Box::new(syn::parse_str(ty).unwrap()),
+    })
+}
+
+/// `(property x, required)` of the response view of `item`.
+fn response_x(item: &syn::ItemStruct) -> (Value, Value) {
+    let schema = serde_json::to_value(parse_struct_to_schema(
+        item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    ))
+    .unwrap();
+    (
+        schema["properties"]["x"].clone(),
+        schema["required"].clone(),
+    )
+}
+
+/// Round 44: the `Some` value of a `skip_serializing_if` `Option` is looked
+/// through a `(T)` / `$t:ty` wrapper too, as the `Option` itself is: the
+/// response view documents `String` (not a nullable one) and no `null` key.
+#[rstest]
+#[case::parenthesized(syn::parse_str::<syn::Type>("(Option<String>)").unwrap())]
+#[case::invisible_group(invisible("Option<String>"))]
+fn skip_none_through_a_group_documents_some_only(#[case] ty: syn::Type) {
+    let item: syn::ItemStruct = syn::parse_quote! {
+        struct S {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            x: #ty
+        }
+    };
+    assert_eq!(response_x(&item), (json!({"type": "string"}), Value::Null));
+}
+
+/// The same for a `value_type` written as a group around the `Option<..>`.
+#[test]
+fn skip_none_value_type_through_a_group_documents_the_some_type() {
+    let ty = invisible("Option<i64>");
+    let item: syn::ItemStruct = syn::parse_quote! {
+        struct S {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            #[schema(value_type = #ty)]
+            x: Option<String>
+        }
+    };
+    assert_eq!(
+        response_x(&item),
+        (json!({"type": "integer", "format": "int64"}), Value::Null)
+    );
+}

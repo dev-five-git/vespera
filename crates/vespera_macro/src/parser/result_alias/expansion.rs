@@ -190,7 +190,7 @@ fn expand_alias(
     // crate-wide scan would run for every `String` / `u8` position), except
     // `Result<T>`, the error alias a crate usually declares once in its src.
     let crate_src = src_dir.filter(|_| name == "Result" || !is_builtin_openapi_type(&name));
-    let (alias, alias_scope) = find_alias(&name, qualifier.as_ref(), here.as_ref(), crate_src)?;
+    let (alias, alias_scope) = find_alias(&name, qualifier.as_ref(), here.as_ref(), crate_src, 0)?;
     let key = definition_key(&alias, &alias_scope);
     if active.contains(&key) {
         return None;

@@ -10,13 +10,14 @@ use super::shared::{
     MAX_CONVERSION_DEPTH, deserialized_instead, input_rename_all, named_struct_fields,
     newtype_source, serde_field_name, struct_definition,
 };
+use crate::parser::type_groups::{strip_type_groups, unwrap_option};
 use crate::{
     parser::schema::{
         SerdeSide, apply_field_rules, extract_aliases, extract_doc_comment, extract_flatten,
         extract_serde_skip_flags, parse_type_to_schema_ref,
         schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
     },
-    schema_macro::type_utils::{is_map_type as utils_is_map_type, last_path_segment, option_inner},
+    schema_macro::type_utils::{is_map_type as utils_is_map_type, last_path_segment},
 };
 
 /// A required `in: path` parameter.
@@ -62,6 +63,8 @@ pub(in crate::parser) fn path_extractor_parameters(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Vec<Parameter> {
+    // A `$t:ty` / `(T)` argument is the type it wraps.
+    let inner_ty = strip_type_groups(inner_ty);
     if let Type::Tuple(tuple) = inner_ty {
         // axum fills the tuple in full-path order, so a tuple LONGER than the
         // route's own parameters starts with the ones a nest prefix
@@ -231,7 +234,7 @@ fn path_parameters_from(
 /// `Option<T>` as `Some` (`visit_some`), never as `null`, so the `Option`
 /// wrapper is dropped: the segment stays a required `T`.
 fn segment_type(ty: &Type) -> &Type {
-    option_inner(ty).unwrap_or(ty)
+    unwrap_option(ty)
 }
 
 /// The schema of a path struct field as serde reads it, with the
@@ -277,7 +280,7 @@ fn find_path_field(
             continue;
         }
         if extract_flatten(&field.attrs) {
-            let flattened = option_inner(&field.ty).unwrap_or(&field.ty);
+            let flattened = unwrap_option(&field.ty);
             if depth < MAX_CONVERSION_DEPTH
                 && let Some(inner) = named_struct_fields(flattened, struct_definitions)
                 && let Some((found, _)) =
@@ -312,6 +315,7 @@ fn is_any_value_schema(schema: &SchemaRef) -> bool {
 /// The per-segment type of a `Path<Map<K, V>>` (`V`), `Path<Seq<(K, V)>>`
 /// (`V`) or `Path<Seq<T>>` (`T`).
 fn path_collection_element(ty: &Type) -> Option<&Type> {
+    let ty = strip_type_groups(ty);
     let segment = last_path_segment(ty)?;
     let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
         return None;

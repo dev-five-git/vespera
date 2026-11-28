@@ -242,9 +242,9 @@ pub fn try_extract_schema_constraints(attrs: &[Attribute]) -> syn::Result<Schema
             }
             // ── numeric range ────────────────────────────────────────
             else if meta.path.is_ident("minimum") {
-                out.minimum = Some(parse_f64(&meta, "minimum")?);
+                out.minimum = Some(parse_f64(&meta, "minimum", false)?);
             } else if meta.path.is_ident("maximum") {
-                out.maximum = Some(parse_f64(&meta, "maximum")?);
+                out.maximum = Some(parse_f64(&meta, "maximum", true)?);
             } else if meta.path.is_ident("exclusive_minimum") {
                 out.exclusive_minimum = Some(parse_bool_or_default_true(&meta)?);
             } else if meta.path.is_ident("exclusive_maximum") {
@@ -316,9 +316,18 @@ fn parse_usize(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<usize> {
 }
 
 /// A finite numeric literal for `key`: `1e999` parses to infinity, which
-/// JSON cannot hold (it would be documented as `null`).
-fn parse_f64(meta: &syn::meta::ParseNestedMeta<'_>, key: &str) -> syn::Result<f64> {
-    parse_checked_f64(meta, key, f64::is_finite, "a finite number")
+/// JSON cannot hold (it would be documented as `null`). `upper` tells a maximum
+/// from a minimum for an inexact integer literal ([`outward_bound`]).
+fn parse_f64(meta: &syn::meta::ParseNestedMeta<'_>, key: &str, upper: bool) -> syn::Result<f64> {
+    let expr: Expr = meta.value()?.parse()?;
+    let value = expr_to_f64(expr.clone())?;
+    if !value.is_finite() {
+        return Err(syn::Error::new_spanned(
+            expr,
+            format!("`{key}` must be a finite number (got {value})"),
+        ));
+    }
+    Ok(outward_bound(&expr, value, upper))
 }
 
 /// `multiple_of`: JSON Schema requires a number strictly greater than 0.
@@ -348,6 +357,34 @@ fn parse_checked_f64(
         expr,
         format!("`{key}` must be {expected} (got {value})"),
     ))
+}
+
+/// `value`, the nearest `f64` to the numeric literal `expr`, moved outward when
+/// that rounding is inexact: an integer past 2^53 can round toward the inside
+/// of an inclusive bound (`max = 9007199254740993` would document
+/// `9007199254740992`), so a maximum rounded down goes up (`upper`) and a
+/// minimum rounded up goes down. An exact value, and any non-integer
+/// expression, is returned as it is.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // f64 <-> i128 on integral values
+pub(super) fn outward_bound(expr: &Expr, value: f64, upper: bool) -> f64 {
+    match integer_literal(expr) {
+        Some(exact) if upper && (value as i128) < exact => value.next_up(),
+        Some(exact) if !upper && (value as i128) > exact => value.next_down(),
+        _ => value,
+    }
+}
+
+/// The value of an integer literal, negated when written `-n`, that fits `i128`.
+fn integer_literal(expr: &Expr) -> Option<i128> {
+    match expr {
+        Expr::Lit(ExprLit {
+            lit: Lit::Int(int), ..
+        }) => int.base10_parse::<i128>().ok(),
+        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+            integer_literal(&unary.expr).map(|n| -n)
+        }
+        _ => None,
+    }
 }
 
 /// A numeric literal expression (`5`, `0.5`, `-10`, `-0.5`) as `f64`.
@@ -914,3 +951,6 @@ mod tests {
         assert!(err.to_string().contains("expected"), "{err}");
     }
 }
+
+#[cfg(test)]
+mod tests_bounds;

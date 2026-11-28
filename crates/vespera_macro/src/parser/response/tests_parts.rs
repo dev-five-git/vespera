@@ -173,3 +173,27 @@ fn no_return_type_is_an_empty_200() {
         r#"{"200":{"description":"Successful response"}}"#
     );
 }
+
+/// Round 44: a `$t:ty` fragment (`Type::Group`) in the return type is the type
+/// it wraps at every depth: `Result<$t, String>` with `$t = Json<User>`
+/// documents the JSON body, as the written `Result<Json<User>, String>` does.
+#[test]
+fn grouped_return_type_documents_its_wrapped_body() {
+    let json: Type = syn::parse_str("Json<User>").unwrap();
+    let grouped = Type::Group(syn::TypeGroup {
+        attrs: Vec::new(),
+        group_token: syn::token::Group::default(),
+        elem: Box::new(json),
+    });
+    let ty: Type = syn::parse_quote!(Result<#grouped, String>);
+    let output: syn::ReturnType = syn::parse_quote!(-> #ty);
+    let known_schemas: HashSet<&str> = HashSet::from(["User"]);
+    let struct_definitions: HashMap<&str, &str> =
+        HashMap::from([("User", "pub struct User { pub id: i32 }")]);
+    let responses = parse_return_type(&output, &known_schemas, &struct_definitions);
+    let value = serde_json::to_value(&responses).unwrap();
+    assert_eq!(
+        value["200"]["content"]["application/json"]["schema"]["$ref"], "#/components/schemas/User",
+        "{value}"
+    );
+}

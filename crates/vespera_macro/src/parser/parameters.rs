@@ -261,3 +261,6 @@ mod tests {
 
 #[cfg(test)]
 mod tests_shapes;
+
+#[cfg(test)]
+mod tests_groups;

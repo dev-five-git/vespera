@@ -358,3 +358,34 @@ fn defaulted_type_naming_a_const_takes_the_const_argument() {
     assert_eq!(data.min_items, Some(3));
     assert_eq!(data.max_items, Some(3));
 }
+
+/// Round 44: a defaulted type parameter is filled from the arguments before a
+/// const argument is spelled into it. `Q<3, N>` with a user type `N` makes the
+/// default `Vec<T>` a `Vec<N>` (a `$ref` to `N`), while the `[u8; N]` default
+/// still pins three elements.
+#[test]
+fn defaulted_type_keeps_a_type_argument_named_like_a_const() {
+    let known: HashSet<String> = ["Q", "N"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([
+        (
+            "Q".to_string(),
+            "struct Q<const N: usize, T, U = Vec<T>, A = [u8; N]> { items: U, data: [T; N], arr: A }"
+                .to_string(),
+        ),
+        ("N".to_string(), "struct N { x: u8 }".to_string()),
+    ]);
+    let schema = inline_schema("Q<3, N>", &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(items) = &properties["items"] else {
+        panic!("the vector is inline");
+    };
+    assert_eq!(
+        reference(items.items.clone().expect("the vector's items")),
+        Reference::schema("N").ref_path
+    );
+    let SchemaRef::Inline(arr) = &properties["arr"] else {
+        panic!("the array is inline");
+    };
+    assert_eq!(arr.min_items, Some(3));
+    assert_eq!(arr.max_items, Some(3));
+}

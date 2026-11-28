@@ -11,6 +11,7 @@ use crate::{
         single_emitted_field, strip_raw_prefix_owned, substitute_type,
         wire_override::container_override_type,
     },
+    parser::type_groups::strip_type_groups,
     schema_macro::type_utils::is_primitive_like as utils_is_primitive_like,
 };
 
@@ -91,7 +92,7 @@ pub(super) fn struct_definition_keyed(
     ty: &Type,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<(String, syn::ItemStruct)> {
-    let Type::Path(type_path) = ty else {
+    let Type::Path(type_path) = strip_type_groups(ty) else {
         return None;
     };
     let segment = type_path.path.segments.last()?;

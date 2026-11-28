@@ -1,5 +1,7 @@
 use syn::{GenericArgument, PathArguments, Type, punctuated::Punctuated, token::Comma};
 
+use super::type_groups::strip_type_groups;
+
 /// The extractor a handler argument documents: `ty` with every
 /// `Validated<E>` / `ValidatedWith<C, E>`, `Result<E, Rejection>`,
 /// `axum_extra::extract::WithRejection<E, R>` and
@@ -9,8 +11,9 @@ use syn::{GenericArgument, PathArguments, Type, punctuated::Punctuated, token::C
 /// carries — and is documented with — what `E` extracts. `Option<E>` is kept:
 /// it changes requiredness, so each caller unwraps it itself.
 pub fn request_extractor(mut ty: &Type) -> &Type {
+    ty = strip_type_groups(ty);
     while let Some(inner) = validated_inner_type(ty).or_else(|| transparent_inner(ty)) {
-        ty = inner;
+        ty = strip_type_groups(inner);
     }
     ty
 }
@@ -36,7 +39,7 @@ fn strip_transparent(mut ty: &Type) -> &Type {
 /// `core::result::Result<T, E>` (two type arguments: a one-argument
 /// `io::Result<T>`-style alias is not the prelude `Result`).
 fn result_ok_type(ty: &Type) -> Option<&Type> {
-    let Type::Path(type_path) = ty else {
+    let Type::Path(type_path) = strip_type_groups(ty) else {
         return None;
     };
     if type_path.qself.is_some() {
@@ -115,7 +118,7 @@ fn extractor_args<'a>(
     ty: &'a Type,
     extractor: &str,
 ) -> Option<&'a Punctuated<GenericArgument, Comma>> {
-    let Type::Path(type_path) = ty else {
+    let Type::Path(type_path) = strip_type_groups(ty) else {
         return None;
     };
     let segment = type_path.path.segments.last()?;

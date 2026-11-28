@@ -7,7 +7,7 @@ use vespera_core::{
 };
 
 use super::shared::is_primitive_or_like;
-use crate::parser::schema::parse_type_to_schema_ref;
+use crate::parser::{schema::parse_type_to_schema_ref, type_groups::strip_type_groups};
 
 /// `TypedHeader<T>` (required) or `Option<TypedHeader<T>>` (optional). The
 /// header is named after `T`, so the argument pattern (`TypedHeader(_)`,
@@ -26,7 +26,10 @@ pub(super) fn parse_typed_header(ty: &Type) -> Option<Vec<Parameter>> {
     let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
         return None;
     };
-    let Some(syn::GenericArgument::Type(Type::Path(inner_type_path))) = args.args.first() else {
+    let Some(syn::GenericArgument::Type(inner)) = args.args.first() else {
+        return None;
+    };
+    let Type::Path(inner_type_path) = strip_type_groups(inner) else {
         return None;
     };
     let inner_segment = inner_type_path.path.segments.last()?;
@@ -179,7 +182,8 @@ fn kebab_case_type_name(ident: &str) -> String {
 fn typed_header_parameter(typed_header: &syn::PathSegment, required: bool) -> Option<Parameter> {
     // `TypedHeader<T>` has exactly one (type) parameter.
     let header_ident = if let syn::PathArguments::AngleBracketed(args) = &typed_header.arguments
-        && let Some(syn::GenericArgument::Type(Type::Path(path))) = args.args.first()
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+        && let Type::Path(path) = strip_type_groups(inner)
     {
         path.path.segments.last().map(|seg| seg.ident.to_string())
     } else {

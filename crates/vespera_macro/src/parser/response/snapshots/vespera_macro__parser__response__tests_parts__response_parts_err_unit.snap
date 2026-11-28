@@ -13,8 +13,5 @@ expression: responses_json(return_type)
         }
       }
     }
-  },
-  "400": {
-    "description": "Error response"
   }
 }

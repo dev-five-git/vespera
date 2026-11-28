@@ -12,7 +12,7 @@ use crate::{
 
 use super::{
     Import, MAX_ALIAS_DEPTH, Qualifier, Scope, alias_item, declares_nominal, file_module,
-    glob_parent_entries, glob_parents, import_kind, import_parent, parse_items, renamed_import,
+    glob_parent_entries, glob_parents, import_kind, import_parent, import_qualifier, parse_items,
     renames_to,
 };
 
@@ -216,6 +216,41 @@ fn module_items(
                     })
             })
         })
+}
+
+/// The item a `use` among `items` imports under another name (`use
+/// crate::error::Result as AppResult;` → `Result`, from `crate::error`), with
+/// the module it comes from (`None` for `self`). `None` without such a rename
+/// (`X as X` is none).
+pub(super) fn renamed_import(
+    items: &[syn::Item],
+    name: &str,
+) -> Option<(String, Option<Qualifier>)> {
+    fn walk(
+        tree: &syn::UseTree,
+        parent: Option<&syn::Ident>,
+        nested: bool,
+        name: &str,
+    ) -> Option<(String, Option<Qualifier>)> {
+        match tree {
+            syn::UseTree::Path(path) => walk(&path.tree, Some(&path.ident), parent.is_some(), name),
+            syn::UseTree::Rename(rename) if rename.rename == name && rename.ident != name => {
+                Some((
+                    rename.ident.to_string(),
+                    parent.and_then(|parent| import_qualifier(parent, nested)),
+                ))
+            }
+            syn::UseTree::Group(group) => group
+                .items
+                .iter()
+                .find_map(|tree| walk(tree, parent, nested, name)),
+            syn::UseTree::Rename(_) | syn::UseTree::Name(_) | syn::UseTree::Glob(_) => None,
+        }
+    }
+    items.iter().find_map(|item| match item {
+        syn::Item::Use(item_use) => walk(&item_use.tree, None, false, name),
+        _ => None,
+    })
 }
 
 /// The local rename `name` is among `items`: the item it renames and the

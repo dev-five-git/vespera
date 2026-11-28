@@ -41,3 +41,17 @@ fn crate_wide_lookup_reads_a_declaration_with_a_comment() {
         "-> Result < Json < User > , AppError >"
     );
 }
+
+/// `use self::A as B; use self::B as A;` has no item behind either name: rustc
+/// rejects the imports, and the expansion must stop instead of following the
+/// renames forever (a proc-macro stack overflow). The return type stays as
+/// written (R44-P1-L1, round 44).
+#[test]
+fn rename_cycle_without_an_item_stops_the_lookup() {
+    let file: syn::File =
+        syn::parse_str("use self::Api as Other; use self::Other as Api;").unwrap();
+    let mut sig: syn::Signature = syn::parse_str("fn handler() -> Api<u8>").unwrap();
+    assert!(!expand_return_type_alias(&mut sig, None, Some(&file), None));
+    let output = &sig.output;
+    assert_eq!(quote::quote!(#output).to_string(), "-> Api < u8 >");
+}

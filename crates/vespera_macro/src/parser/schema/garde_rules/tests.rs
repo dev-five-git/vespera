@@ -221,6 +221,28 @@ fn numeric_bounds(field_src: &str) -> (Option<f64>, Option<f64>) {
     "#[garde(range(max = 9))] #[garde(range(max = -1e999))] value: f64",
     (None, Some(9.0))
 )]
+// Round 44: an integer literal past 2^53 is rounded outward (a maximum up, a
+// minimum down), so the documented bound never excludes the Rust bound's value.
+#[case::integer_maximum_rounds_up(
+    "#[garde(range(max = 9007199254740993))] value: i64",
+    (None, Some(9_007_199_254_740_994.0))
+)]
+#[case::integer_minimum_rounded_down_is_looser(
+    "#[garde(range(min = 9007199254740993))] value: u64",
+    (Some(9_007_199_254_740_992.0), None)
+)]
+#[case::negative_integer_minimum_rounds_down(
+    "#[garde(range(min = -9007199254740993))] value: i64",
+    (Some(-9_007_199_254_740_994.0), None)
+)]
+#[case::integer_equal_rounds_both_ways(
+    "#[garde(range(equal = 9007199254740993))] value: i64",
+    (Some(9_007_199_254_740_992.0), Some(9_007_199_254_740_994.0))
+)]
+#[case::exact_integer_maximum_unchanged(
+    "#[garde(range(max = 9007199254740992))] value: i64",
+    (None, Some(9_007_199_254_740_992.0))
+)]
 fn repeated_range_rules_document_the_tightest_bound(
     #[case] field_src: &str,
     #[case] expected: (Option<f64>, Option<f64>),
