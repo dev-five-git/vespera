@@ -50,8 +50,8 @@ use super::{DB, FieldMapping, MODEL};
 ///
 /// # Errors
 ///
-/// A `#[sea_orm(...)]` string value that must become an identifier (`from`, or
-/// the target entity's `from` reached through `via_rel`; a `relation_enum` is
+/// A `#[sea_orm(...)]` string value that must become an identifier (`from`, `to`,
+/// or the target entity's `from` reached through `via_rel`; a `relation_enum` is
 /// only a lookup key) but is not one (e.g. `from = "author id"`) is reported as a
 /// `syn::Error` spanned on `source_type`, instead of panicking the macro.
 pub fn generate_from_model_with_relations(

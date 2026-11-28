@@ -537,27 +537,34 @@ mod tests {
     #[case::camel_json_name(
         "#[serde(rename_all = \"camelCase\")] struct User { user_name: String, id: i32 }",
         "userName",
-        Some("user_name")
+        Ok("user_name")
     )]
-    #[case::rust_name("struct User { user_name: String }", "user_name", Some("user_name"))]
+    #[case::rust_name("struct User { user_name: String }", "user_name", Ok("user_name"))]
     #[case::skipped_is_refused(
         "struct User { id: i32, #[serde(skip)] hidden: i32 }",
         "hidden",
-        None
+        Err("`pick` names field `hidden`, which this type does not include")
     )]
-    #[case::unknown_is_refused("struct User { id: i32 }", "nope", None)]
+    #[case::unknown_is_refused(
+        "struct User { id: i32 }",
+        "nope",
+        Err("field `nope` does not exist in type `User`")
+    )]
     fn resolves_filter_names(
         #[case] source: &str,
         #[case] name: &str,
-        #[case] expected: Option<&str>,
+        #[case] expected: Result<&str, &str>,
     ) {
         let parsed: syn::ItemStruct = syn::parse_str(source).unwrap();
         let ty: syn::Type = syn::parse2(quote!(User)).unwrap();
         let names = Some(vec![name.to_string()]);
         let result = resolve_filter_names("pick", names.as_ref(), &parsed, "User", &ty);
         match expected {
-            Some(rust) => assert_eq!(result.unwrap(), HashSet::from([rust.to_string()])),
-            None => assert!(result.is_err()),
+            Ok(rust) => assert_eq!(result.unwrap(), HashSet::from([rust.to_string()])),
+            Err(message) => {
+                let err = result.unwrap_err().to_string();
+                assert!(err.contains(message), "{err}");
+            }
         }
     }
 

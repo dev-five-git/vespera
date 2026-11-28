@@ -47,13 +47,14 @@ fn names_ecosystem_type(segments: &[String], source_module: &[String]) -> bool {
             _ => break,
         }
     }
+    // A leading `::` (`use ::rust_decimal::Decimal;`) leaves an empty first
+    // segment: only that one is skipped (R45-SM4-L1).
+    let segments: Vec<&str> = path.iter().map(String::as_str).collect();
+    let segments = segments.strip_prefix(&[""]).unwrap_or(&segments);
     // `vespera` re-exports chrono (`vespera::chrono`, R42-SM4-L1); its other
     // items are not ecosystem types.
     matches!(
-        path.iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .as_slice(),
+        segments,
         ["sea_orm" | "chrono" | "rust_decimal" | "uuid" | "time", ..] | ["vespera", "chrono", ..]
     )
 }
