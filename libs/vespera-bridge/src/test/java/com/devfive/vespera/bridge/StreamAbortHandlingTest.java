@@ -208,4 +208,40 @@ class StreamAbortHandlingTest {
         assertSame(failure, thrown, "the stream failure is rethrown, not the broken pipe");
         assertEquals("broken pipe", thrown.getSuppressed()[0].getMessage());
     }
+
+    /** A servlet response whose writer was taken by a filter: {@code getOutputStream} refuses. */
+    private static final class WriterTakenResponse extends MockHttpServletResponse {
+        private boolean writerTaken;
+
+        void takeWriter() {
+            writerTaken = true;
+        }
+
+        @Override
+        public ServletOutputStream getOutputStream() {
+            if (writerTaken) {
+                throw new IllegalStateException("getWriter() has already been called for this response");
+            }
+            return super.getOutputStream();
+        }
+    }
+
+    @Test
+    void aRuntimeFailureWritingTheProxy500KeepsTheStreamFailureAsTheCause() throws IOException {
+        WriterTakenResponse servlet = new WriterTakenResponse();
+        ProxyServletResponse response = appliedRustHeader(servlet);
+        servlet.takeWriter();
+        VesperaStreamAbortedException panic =
+                new VesperaStreamAbortedException(VesperaStreamAbortedException.PANIC_MESSAGE);
+
+        IOException thrown = assertThrows(IOException.class,
+                () -> DirectModeDispatcher.streamHeaderFirst(response, () -> {
+                    throw panic;
+                }));
+
+        assertSame(panic, thrown, "the stream failure is rethrown, not the writer IllegalStateException");
+        assertEquals(1, thrown.getSuppressed().length);
+        assertEquals(IllegalStateException.class, thrown.getSuppressed()[0].getClass());
+        assertTrue(response.panicked());
+    }
 }

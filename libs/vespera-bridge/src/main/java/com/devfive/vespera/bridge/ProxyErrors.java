@@ -69,7 +69,8 @@ final class ProxyErrors {
      * container aborts the connection (the client sees a truncated
      * transfer, never a cleanly terminated short body).
      *
-     * A failure writing the proxy {@code 500} (the client already went away) is
+     * A failure writing the proxy {@code 500} (the client already went away, or
+     * the container refuses the body stream, e.g. a filter took the writer) is
      * attached to {@code aborted} as suppressed and {@code aborted} is thrown,
      * so the log cause stays the stream failure, not the broken pipe.
      *
@@ -84,7 +85,7 @@ final class ProxyErrors {
         }
         try {
             return write(response, 500, panic ? RUST_PANIC : STREAM_ABORTED, closeConnection);
-        } catch (IOException writeFailure) {
+        } catch (IOException | RuntimeException writeFailure) {
             aborted.addSuppressed(writeFailure);
             throw aborted;
         }

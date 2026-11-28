@@ -473,8 +473,15 @@ class VesperaClientTest {
         assertEquals("application/octet-stream",
                 header(transport.requests.get(0)).get("headers").get("content-type").asText());
         assertEquals("echoed", r.bodyString());
+        // The consumed guard (not the streamed-body rule) rejects a second send.
         assertThrows(IllegalStateException.class, req::send);
-        assertThrows(IllegalStateException.class, req::sendAsync);
+        ExecutionException again = assertThrows(ExecutionException.class,
+                () -> req.sendAsync(Runnable::run).get());
+        assertInstanceOf(IllegalStateException.class, again.getCause());
+        assertTrue(again.getCause().getMessage().contains("already sent"), again.getCause().getMessage());
+        // Separately: a streamed body is never sent via the non-blocking path.
+        assertThrows(IllegalStateException.class, () -> client.post("/echo/stream")
+                .body(new ByteArrayInputStream(payload), null).sendAsync());
 
         // An error wire (nothing streamed) keeps its inline body.
         transport.streamedBody = new byte[0];

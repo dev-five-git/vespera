@@ -148,7 +148,7 @@ class VesperaNativeLoaderTest {
 
     @Test
     void presentBundledResourceIsExtractedVerifiedAndRejectedOnlyAtSystemLoad() throws Exception {
-        Path temp = Files.createTempDirectory("vespera-native-loader-resource-");
+        Path temp = NativeTestTemp.reusableBase("vespera-native-loader-resource-");
         String oldVerify = System.getProperty("vespera.native.verifyExtractedDigest");
         String oldDir = System.getProperty(VesperaNativeLoader.NATIVE_DIR_PROPERTY);
         try {
@@ -486,7 +486,7 @@ class VesperaNativeLoaderTest {
 
     @Test
     void extractionIsContentAddressedAndReusedAcrossCalls() throws Exception {
-        Path base = Files.createTempDirectory("vespera-native-cas-");
+        Path base = NativeTestTemp.reusableBase("vespera-native-cas-");
         try {
             byte[] content = "pretend cdylib v1".getBytes(StandardCharsets.UTF_8);
             AtomicInteger opens = new AtomicInteger();
@@ -523,7 +523,7 @@ class VesperaNativeLoaderTest {
 
     @Test
     void corruptedCachedCopyIsReplaced() throws Exception {
-        Path base = Files.createTempDirectory("vespera-native-corrupt-");
+        Path base = NativeTestTemp.reusableBase("vespera-native-corrupt-");
         try {
             byte[] content = "good bytes".getBytes(StandardCharsets.UTF_8);
             Path target = VesperaNativeLoader.extract("native/x/demo.dll", "demo.dll", base,
@@ -544,7 +544,7 @@ class VesperaNativeLoaderTest {
 
     @Test
     void concurrentExtractionsConvergeOnOneVerifiedFile() throws Exception {
-        Path base = Files.createTempDirectory("vespera-native-race-");
+        Path base = NativeTestTemp.reusableBase("vespera-native-race-");
         ExecutorService pool = Executors.newFixedThreadPool(8);
         try {
             byte[] content = new byte[512 * 1024];
@@ -622,8 +622,17 @@ class VesperaNativeLoaderTest {
                 // Inherit-only (applies to children only, e.g. CREATOR OWNER).
                 allow(new Principal("CREATOR OWNER"), java.util.Set.of(
                         java.nio.file.attribute.AclEntryFlag.INHERIT_ONLY), write),
-                // An unresolvable SID (deleted / sandbox account).
-                allow(new Principal("S-1-5-21-1-2-3-1001"), none, write)), trusted));
+                // An app-container / capability SID: no account can log on as it.
+                allow(new Principal("S-1-15-2-1"), none, write)), trusted));
+        // An unresolvable domain-account SID may log on later: its write rights count.
+        String unresolved = VesperaNativeLoader.aclProblem(List.of(
+                allow(me, none, write),
+                allow(new Principal("S-1-5-21-1-2-3-1001"), none, write)), trusted);
+        assertTrue(unresolved != null && unresolved.contains("S-1-5-21-1-2-3-1001"), unresolved);
+        assertNull(VesperaNativeLoader.aclProblem(List.of(
+                allow(me, none, write),
+                allow(new Principal("S-1-5-21-1-2-3-1001"), none, read)), trusted),
+                "read-only rights of an unresolved SID are fine");
         String problem = VesperaNativeLoader.aclProblem(List.of(
                 allow(me, none, write), allow(users, none, read, append)), trusted);
         assertTrue(problem != null && problem.contains("BUILTIN\\Users"), problem);
@@ -635,7 +644,7 @@ class VesperaNativeLoaderTest {
     @Test
     @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
     void windowsReusesAnOwnedPrivateDirAndFallsBackWhenOthersMayWrite() throws Exception {
-        Path base = Files.createTempDirectory("vespera-native-acl-");
+        Path base = NativeTestTemp.reusableBase("vespera-native-acl-");
         try {
             VesperaNativeLoader.ExtractionDir owned = VesperaNativeLoader.prepareDir(base, "vespera-native-abc");
             assertTrue(owned.reusable(), "a fresh per-user temp dir is private");

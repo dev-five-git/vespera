@@ -33,6 +33,9 @@ import org.springdoc.core.customizers.OpenApiCustomizer;
  *       ({@code vespera.bridge.include-patterns} / {@code exclude-patterns})
  *       are dropped; a path springdoc (or an earlier app) already documents
  *       keeps that definition (logged).</li>
+ *   <li><strong>Webhooks</strong> are added by name like paths, without the
+ *       proxy patterns (they are not served routes); a name springdoc already
+ *       documents keeps its definition (logged).</li>
  *   <li><strong>Components</strong> are added by name; an identical component
  *       is shared, a different one under a clashing name is renamed
  *       {@code <label>_<name>} ({@code label} = {@code vespera} for the default
@@ -133,6 +136,7 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
             }
         }
         mergePaths(openApi, app, vespera.getPaths());
+        mergeWebhooks(openApi, app, vespera.getWebhooks());
         mergeTags(openApi, vespera.getTags());
     }
 
@@ -372,11 +376,21 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
         JsonNode security = spec.get("security");
         boolean copySecurity = security instanceof ArrayNode array && !array.isEmpty();
         boolean markPublic = !copySecurity && hostSecured;
-        if (!(spec.get("paths") instanceof ObjectNode paths)
-                || (!copySecurity && !markPublic && namedApp == null)) {
+        if (!copySecurity && !markPublic && namedApp == null) {
             return;
         }
-        for (JsonNode item : paths) {
+        prepareItems(spec.get("paths"), security, copySecurity, markPublic, namedApp);
+        // Webhooks are called by the server, never through the proxy: they get
+        // the security defaults, not the app-selection header.
+        prepareItems(spec.get("webhooks"), security, copySecurity, markPublic, null);
+    }
+
+    private void prepareItems(JsonNode items, JsonNode security, boolean copySecurity, boolean markPublic,
+                              String namedApp) {
+        if (!(items instanceof ObjectNode objects)) {
+            return;
+        }
+        for (JsonNode item : objects) {
             if (!(item instanceof ObjectNode pathItem)) {
                 continue;
             }
@@ -426,6 +440,32 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
         }
         if (!clashes.isEmpty()) {
             log.warn("vespera app '{}': paths already documented by springdoc were not merged: {}", app, clashes);
+        }
+    }
+
+    /**
+     * Webhooks (outbound callbacks the app documents, not routes) are merged
+     * by name like paths, without the proxy's include / exclude patterns (those
+     * match served paths, never a webhook name). A name springdoc already
+     * documents keeps its definition.
+     */
+    private static void mergeWebhooks(OpenAPI openApi, String app, Map<String, PathItem> webhooks) {
+        if (webhooks == null || webhooks.isEmpty()) {
+            return;
+        }
+        if (openApi.getWebhooks() == null) {
+            openApi.setWebhooks(new LinkedHashMap<>());
+        }
+        List<String> clashes = new ArrayList<>();
+        for (Map.Entry<String, PathItem> entry : webhooks.entrySet()) {
+            if (openApi.getWebhooks().containsKey(entry.getKey())) {
+                clashes.add(entry.getKey());
+                continue;
+            }
+            openApi.getWebhooks().put(entry.getKey(), entry.getValue());
+        }
+        if (!clashes.isEmpty()) {
+            log.warn("vespera app '{}': webhooks already documented by springdoc were not merged: {}", app, clashes);
         }
     }
 

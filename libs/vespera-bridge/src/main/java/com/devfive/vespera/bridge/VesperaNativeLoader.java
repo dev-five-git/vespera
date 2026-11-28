@@ -505,15 +505,17 @@ final class VesperaNativeLoader {
      * Why {@code acl} lets an untrusted principal write into the directory,
      * or {@code null}.  Inherit-only entries (which only apply to new
      * children, e.g. {@code CREATOR OWNER}), {@code DENY} entries and
-     * principals Windows cannot resolve to an account (reported as a raw
-     * {@code S-1-...} SID: deleted accounts, sandbox / capability SIDs — no
-     * user can log on as them) are ignored.
+     * app-container / capability SIDs ({@link #isCapabilitySid}, {@code S-1-15-...},
+     * no user can log on as them) are ignored.  Any other principal Windows
+     * cannot resolve to a name (reported as a raw {@code S-1-...} SID, e.g. a
+     * domain account that is unreachable right now) is untrusted like a named
+     * one: it may log on later, so its write-like rights count.
      */
     static String aclProblem(List<AclEntry> acl, Predicate<UserPrincipal> trusted) {
         for (AclEntry entry : acl) {
             if (entry.type() != AclEntryType.ALLOW
                     || entry.flags().contains(AclEntryFlag.INHERIT_ONLY)
-                    || isUnresolvedSid(entry.principal())
+                    || isCapabilitySid(entry.principal())
                     || trusted.test(entry.principal())) {
                 continue;
             }
@@ -542,8 +544,13 @@ final class VesperaNativeLoader {
 
     private static final String[] WELL_KNOWN_ADMINS = {"NT AUTHORITY\\SYSTEM", "BUILTIN\\Administrators"};
 
-    static boolean isUnresolvedSid(UserPrincipal principal) {
-        return principal.getName().startsWith("S-1-");
+    /**
+     * {@code S-1-15-*}: app-container and capability SIDs (for example
+     * {@code ALL APPLICATION PACKAGES}), which Windows lists by raw SID. They
+     * are not accounts, so nothing can log on as them.
+     */
+    static boolean isCapabilitySid(UserPrincipal principal) {
+        return principal.getName().startsWith("S-1-15-");
     }
 
     /** {@code SYSTEM} / {@code Administrators} by (English) account name. */
