@@ -45,10 +45,17 @@ use crate::schema_macro::cfg_eval::{Predicate, compiled_out, statically_active, 
 use crate::schema_macro::field_attrs::field_cfgs;
 use crate::schema_macro::file_cache;
 
+use imports::{CronImports, cron_imports};
+
 /// Substring every `#[cron(..)]` / `#[vespera::cron(..)]` attribute contains.
 /// Only a pre-filter: `#[cron ("..")]` is valid Rust too, so the marker is the
 /// name alone and the parse decides what is a job.
 const CRON_ATTR_MARKER: &str = "cron";
+
+/// Substring of a glob import (`use super::*;`, `use crate::*;`). A file with
+/// one may use a cron alias of its enclosing module without spelling `cron`
+/// itself (see [`CronImports::inheriting`]), so it is parsed too.
+const GLOB_IMPORT_MARKER: &str = "::*";
 
 /// Build the cron job list for one `vespera!` expansion: the storage entries
 /// first (unchanged order), then any job the module-tree scan finds that the
@@ -416,12 +423,22 @@ struct Scope<'a> {
     /// The enclosing module's bare `cron` is another crate's (see
     /// [`CronImports::foreign`]); `false` at the crate root.
     inherited_foreign: bool,
+    /// The enclosing module's effective imports: the aliases a `use super::*`
+    /// / `use crate::*` glob of this module can bring in.
+    inherited_imports: &'a CronImports,
 }
 
 impl ModuleTree {
     fn from_root(root: &Path, src_dir: &Path) -> Self {
         let mut tree = Self::default();
-        tree.walk(root, src_dir, "", &CfgGate::default(), false);
+        tree.walk(
+            root,
+            src_dir,
+            "",
+            &CfgGate::default(),
+            false,
+            &CronImports::default(),
+        );
         tree
     }
 
@@ -435,6 +452,7 @@ impl ModuleTree {
         module_path: &str,
         gate: &CfgGate,
         inherited_foreign: bool,
+        inherited_imports: &CronImports,
     ) {
         let display = canonical_display(file);
         // A module cycle (`#[path = "lib.rs"] mod again;`, a symlinked
@@ -454,6 +472,7 @@ impl ModuleTree {
                 inline: "",
                 gate: gate.inside(&summary.module.gate),
                 inherited_foreign,
+                inherited_imports,
             };
             self.visit(&summary.module, &scope);
         }
@@ -462,6 +481,7 @@ impl ModuleTree {
 
     fn visit(&mut self, module: &ModuleSummary, scope: &Scope<'_>) {
         let foreign = module.imports.foreign(scope.inherited_foreign);
+        let imports = module.imports.inheriting(scope.inherited_imports);
         for item in &module.items {
             match item {
                 ItemSummary::Mod {
@@ -484,6 +504,7 @@ impl ModuleTree {
                             inline: &inline,
                             gate,
                             inherited_foreign: foreign,
+                            inherited_imports: &imports,
                         };
                         self.visit(inner, &child);
                     } else if let Some(path) = path {
@@ -500,7 +521,7 @@ impl ModuleTree {
                         let child = fold_parent_dirs(&base.join(path));
                         if child.is_file() {
                             let dir = child.parent().unwrap_or(base).to_path_buf();
-                            self.walk(&child, &dir, &child_path, &gate, foreign);
+                            self.walk(&child, &dir, &child_path, &gate, foreign, &imports);
                         }
                     } else {
                         let child_dir = scope.mod_dir.join(name);
@@ -511,18 +532,26 @@ impl ModuleTree {
                         .into_iter()
                         .find(|candidate| candidate.is_file())
                         {
-                            self.walk(&child, &child_dir, &child_path, &gate, foreign);
+                            self.walk(&child, &child_dir, &child_path, &gate, foreign, &imports);
                         }
                     }
                 }
                 ItemSummary::Cron { name, gate, attrs } => {
-                    // The job is the first attribute the module's imports
-                    // leave vespera's (a foreign bare `#[cron]` is skipped).
-                    let job = attrs
+                    // The attributes this module's imports (its own, and the
+                    // aliases its globs inherit) name vespera's `cron`. The job
+                    // is the first of them, skipping a foreign bare `#[cron]`;
+                    // a fn none of them names is not a cron fn at all.
+                    let claimed: Vec<&CronAttr> = attrs
                         .iter()
-                        .find(|attr| !(foreign && attr.bare))
-                        .and_then(|attr| attr.job.as_ref());
-                    self.add_cron_fn(name, job, &gate.inside(&scope.gate), scope);
+                        .filter(|attr| imports.is_cron_segments(&attr.segments))
+                        .collect();
+                    if !claimed.is_empty() {
+                        let job = claimed
+                            .iter()
+                            .find(|attr| !(foreign && attr.is_bare()))
+                            .and_then(|attr| attr.job.as_ref());
+                        self.add_cron_fn(name, job, &gate.inside(&scope.gate), scope);
+                    }
                 }
             }
         }
@@ -570,7 +599,7 @@ impl CfgGate {
 }
 
 /// A schedulable job's expression, options and registration `cfg` predicates
-/// (see [`cron_entries`]).
+/// (see [`cron_candidates`]).
 type CronJob = (String, crate::metadata::CronOptions, Vec<String>);
 
 /// What the module-tree walk reads off one file: its items (cron functions
@@ -608,18 +637,28 @@ enum ItemSummary {
         name: String,
         /// Its `#[cfg]` gate.
         gate: CfgGate,
-        /// The `#[cron]` attributes of a schedulable fn, in source order
-        /// (empty when the fn is not schedulable, see [`cron_attrs`]).
+        /// The attributes of the fn that may name vespera's `cron`, in source
+        /// order (see [`cron_attrs`]).
         attrs: Vec<CronAttr>,
     },
 }
 
-/// One `#[cron]` attribute of a schedulable fn.
+/// One attribute of a fn that may be a `#[cron]`, whichever path it is spelled
+/// with: which of them is one depends on the imports of the module the fn is
+/// in, so that is decided at walk time.
 struct CronAttr {
-    /// Written bare (`#[cron]`, not `#[vespera::cron]`).
-    bare: bool,
-    /// Its job when its arguments parse (see [`cron_attrs`]).
+    /// The path the attribute is spelled with (`cron`, `job`, `v::cron`).
+    segments: Vec<String>,
+    /// Its job when its arguments parse and the fn is schedulable (see
+    /// [`cron_attrs`]).
     job: Option<CronJob>,
+}
+
+impl CronAttr {
+    /// Written bare (`#[cron]`, not `#[vespera::cron]`).
+    fn is_bare(&self) -> bool {
+        matches!(self.segments.as_slice(), [name] if name == "cron")
+    }
 }
 
 /// The cached [`FileSummary`]: `None` for a file without `mod` or a cron
@@ -629,7 +668,8 @@ struct CachedSummary(Option<std::rc::Rc<FileSummary>>);
 
 fn file_summary(file: &Path) -> Option<std::rc::Rc<FileSummary>> {
     file_cache::derived(file, |content| {
-        let collect_jobs = content.contains(CRON_ATTR_MARKER);
+        let collect_jobs =
+            content.contains(CRON_ATTR_MARKER) || content.contains(GLOB_IMPORT_MARKER);
         CachedSummary(
             (content.contains("mod") || collect_jobs)
                 .then(|| syn::parse_file(content).ok())
@@ -666,12 +706,12 @@ fn summarize(items: &[syn::Item], collect_jobs: bool) -> ModuleSummary {
                     && function
                         .attrs
                         .iter()
-                        .any(|attr| !cron_entries(attr, &imports).is_empty()) =>
+                        .any(|attr| !cron_candidates(attr).is_empty()) =>
             {
                 Some(ItemSummary::Cron {
                     name: function.sig.ident.unraw().to_string(),
                     gate: CfgGate::of(&function.attrs),
-                    attrs: cron_attrs(function, &imports),
+                    attrs: cron_attrs(function),
                 })
             }
             _ => None,
@@ -684,33 +724,41 @@ fn summarize(items: &[syn::Item], collect_jobs: bool) -> ModuleSummary {
     }
 }
 
-/// The `#[cron]` attributes of a schedulable `#[cron("…", tz = "…", overlap =
-/// "…")]` function (none when the function is not one: the attribute macro
-/// reports malformed ones itself). Which of them is the job depends on the
-/// module's cron imports, so it is picked at walk time ([`CronAttr`]).
-fn cron_attrs(function: &syn::ItemFn, imports: &CronImports) -> Vec<CronAttr> {
-    if validate_cron_fn(function).is_err() {
-        return Vec::new();
-    }
+/// The [`CronAttr`]s of a fn that may be a `#[cron]` (see [`cron_candidates`]).
+/// A fn that is not schedulable (the attribute macro reports its malformed
+/// attributes itself) keeps its candidates, so the walk still indexes it as it
+/// always did, but none of them has a job.
+fn cron_attrs(function: &syn::ItemFn) -> Vec<CronAttr> {
+    let schedulable = validate_cron_fn(function).is_ok();
     function
         .attrs
         .iter()
-        .flat_map(|attr| cron_entries(attr, imports))
+        .flat_map(cron_candidates)
+        .map(|mut attr| {
+            if !schedulable {
+                attr.job = None;
+            }
+            attr
+        })
         .collect()
 }
 
-/// The [`CronAttr`]s one attribute of a fn carries: a `#[cron]` itself, or the
-/// `cron` of a `cfg_attr(p, ..)`. The compiler keeps the latter unless `p` is
-/// statically false, so the scan drops it then. A `p` that is statically true
-/// makes it a plain job; an undecided `p` (`windows`, `test`, `target_*`, ..)
-/// keeps the job too, registered under `#[cfg(p)]` (see
-/// [`CronMetadata::cfg`]) so rustc decides exactly as it does for the attribute.
-fn cron_entries(attr: &syn::Attribute, imports: &CronImports) -> Vec<CronAttr> {
-    if imports.is_cron_path(attr.path()) {
-        return vec![cron_attr(attr.path(), attr.parse_args::<CronArgs>(), &[])];
-    }
+/// The [`CronAttr`]s one attribute of a fn may carry: itself, or the metas of a
+/// `cfg_attr(p, ..)`. A path with at most two segments (`cron`, `job`,
+/// `v::cron`) may name vespera's `cron` through an import, which only the
+/// walk knows ([`CronImports::is_cron_segments`]). The compiler keeps the
+/// `cfg_attr` metas unless `p` is statically false, so the scan drops them
+/// then. A `p` that is statically true makes a meta a plain job; an undecided
+/// `p` (`windows`, `test`, `target_*`, ..) keeps the job too, registered under
+/// `#[cfg(p)]` (see [`CronMetadata::cfg`]) so rustc decides exactly as it does
+/// for the attribute.
+fn cron_candidates(attr: &syn::Attribute) -> Vec<CronAttr> {
     if !attr.path().is_ident("cfg_attr") {
-        return Vec::new();
+        return if may_name_cron(attr.path()) {
+            vec![cron_attr(attr.path(), attr.parse_args::<CronArgs>(), &[])]
+        } else {
+            Vec::new()
+        };
     }
     let Ok((predicate, metas)) = attr.parse_args_with(cfg_attr_parts) else {
         return Vec::new();
@@ -725,7 +773,7 @@ fn cron_entries(attr: &syn::Attribute, imports: &CronImports) -> Vec<CronAttr> {
     };
     metas
         .iter()
-        .filter(|meta| imports.is_cron_path(meta.path()))
+        .filter(|meta| may_name_cron(meta.path()))
         .map(|meta| {
             let args = meta
                 .require_list()
@@ -733,6 +781,12 @@ fn cron_entries(attr: &syn::Attribute, imports: &CronImports) -> Vec<CronAttr> {
             cron_attr(meta.path(), args, &gate)
         })
         .collect()
+}
+
+/// Whether `path` could be vespera's `cron` spelled through an import: at most
+/// two segments (`cron`, a local alias, `v::cron`).
+fn may_name_cron(path: &syn::Path) -> bool {
+    path.segments.len() <= 2
 }
 
 /// `cfg_attr(predicate, a, b, ..)`: the predicate and the attributes it adds.
@@ -746,125 +800,15 @@ fn cfg_attr_parts(
 
 fn cron_attr(path: &syn::Path, args: syn::Result<CronArgs>, gate: &[String]) -> CronAttr {
     CronAttr {
-        bare: path.is_ident("cron"),
+        segments: path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect(),
         job: args
             .ok()
             .map(|args| (args.expression.value(), args.options(), gate.to_vec())),
     }
-}
-
-/// The `use` items of one module that decide what a bare `#[cron]` in it
-/// names (see [`CronImports::foreign`]), and the local names vespera's `cron`
-/// and the vespera crate are bound to in it.
-#[derive(Clone, Default)]
-#[allow(clippy::struct_excessive_bools)]
-struct CronImports {
-    /// `use other::cron;`, `use other::{cron};`, `use other::job as cron;`.
-    explicit_foreign: bool,
-    /// `use vespera::cron;` (or `crate` / `self` / `super` rooted).
-    explicit_vespera: bool,
-    /// `use other::*;`.
-    foreign_glob: bool,
-    /// `use super::*;` / `use crate::*;`: the names of the enclosing module
-    /// (its own `cron` import) reach this module through the glob.
-    inheriting_glob: bool,
-    /// Local names of `vespera::cron` (`use vespera::cron as job;`).
-    cron_aliases: Vec<String>,
-    /// Local names of the vespera crate (`use vespera as v;`).
-    crate_aliases: Vec<String>,
-}
-
-impl CronImports {
-    /// Whether a bare `#[cron]` in this module is another crate's attribute.
-    /// An explicit `cron` import shadows a glob, so it decides: vespera's when
-    /// it is rooted at `vespera`, `crate`, `self` or `super`, whatever the
-    /// globs bring in. Without one, a foreign glob makes the bare form foreign,
-    /// and so does an inheriting glob when the enclosing module's bare `cron`
-    /// is foreign (`inherited`). `crate::*` is approximated by the enclosing
-    /// module's decision.
-    fn foreign(&self, inherited: bool) -> bool {
-        self.explicit_foreign
-            || (!self.explicit_vespera
-                && (self.foreign_glob || (self.inheriting_glob && inherited)))
-    }
-
-    /// `cron` (or an alias of vespera's `cron`) or `vespera::cron` (or
-    /// `<alias of the vespera crate>::cron`). An alias is recognised only
-    /// where this module's `use` items bind it, so a `job` bound to another
-    /// crate's `cron` is not a job.
-    fn is_cron_path(&self, path: &syn::Path) -> bool {
-        let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-        match segments.as_slice() {
-            [name] => name == "cron" || self.cron_aliases.contains(name),
-            [krate, name] => {
-                name == "cron" && (krate == "vespera" || self.crate_aliases.contains(krate))
-            }
-            _ => false,
-        }
-    }
-}
-
-/// The [`CronImports`] of `items` (the `use` items of one module).
-fn cron_imports(items: &[syn::Item]) -> CronImports {
-    // `depth` counts the path segments above `tree`: 1 is a direct child of
-    // the first segment (`vespera::cron as job` or `vespera::{cron as job}`).
-    fn collect(
-        tree: &syn::UseTree,
-        root: Option<&syn::Ident>,
-        depth: usize,
-        out: &mut CronImports,
-    ) {
-        let foreign = root.is_some_and(|root| {
-            !matches!(
-                root.to_string().as_str(),
-                "vespera" | "crate" | "self" | "super"
-            )
-        });
-        match tree {
-            syn::UseTree::Path(path) => {
-                collect(&path.tree, root.or(Some(&path.ident)), depth + 1, out);
-            }
-            syn::UseTree::Name(name) if name.ident == "cron" => {
-                out.explicit_foreign |= foreign;
-                out.explicit_vespera |= root.is_some() && !foreign;
-            }
-            syn::UseTree::Rename(rename) if rename.rename == "cron" => {
-                out.explicit_foreign |= foreign;
-                out.explicit_vespera |= root.is_some() && !foreign;
-            }
-            syn::UseTree::Rename(rename)
-                if rename.ident == "cron"
-                    && depth == 1
-                    && root.is_some_and(|root| root == "vespera") =>
-            {
-                out.cron_aliases.push(rename.rename.to_string());
-            }
-            syn::UseTree::Rename(rename) if rename.ident == "vespera" && root.is_none() => {
-                out.crate_aliases.push(rename.rename.to_string());
-            }
-            syn::UseTree::Group(group) => {
-                for tree in &group.items {
-                    collect(tree, root, depth, out);
-                }
-            }
-            // A glob may bring in another crate's `cron`; only vespera's (or
-            // this crate's own) globs leave the bare form vespera's. A
-            // `super` / `crate` glob also brings in the enclosing names.
-            syn::UseTree::Glob(_) => {
-                out.foreign_glob |= foreign;
-                out.inheriting_glob |=
-                    root.is_some_and(|root| matches!(root.to_string().as_str(), "super" | "crate"));
-            }
-            _ => {}
-        }
-    }
-    let mut imports = CronImports::default();
-    for item in items {
-        if let syn::Item::Use(item) = item {
-            collect(&item.tree, None, 0, &mut imports);
-        }
-    }
-    imports
 }
 
 /// The value of a `#[path = "…"]` attribute.
@@ -950,6 +894,7 @@ fn cron_module_path(relative: &str) -> String {
     module_path
 }
 
+mod imports;
 mod index;
 #[cfg(test)]
 mod tests;

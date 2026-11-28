@@ -618,7 +618,22 @@ pub fn route_test_only(defs: &[FnDefinition], name: &str, method: &str, signatur
     } else {
         same_method
     };
+    // Identical-signature twins (`#[cfg(test)]` and `#[cfg(not(test))]` of one
+    // fn) cannot be told apart by the stored text. `cfg` compiles exactly one
+    // of them in this build, and the storage holds that one: a `cfg(test)`
+    // twin is the stored one only in the `--test` harness build.
+    if matching.len() > 1 {
+        return is_test_harness_build() && matching.iter().any(|def| def.test_only);
+    }
     !matching.is_empty() && matching.iter().all(|def| def.test_only)
+}
+
+/// Whether this macro expands inside the `--test` harness build (the only
+/// build where a `cfg(test)` item is compiled; see `env_access::compiler_args`).
+fn is_test_harness_build() -> bool {
+    crate::env_access::compiler_args()
+        .iter()
+        .any(|arg| arg == "--test")
 }
 
 /// A `(line, column)` source position, as `proc_macro2` reports it.

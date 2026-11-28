@@ -28,6 +28,8 @@ fn error_status_reads_every_literal_status() {
 #[case::out_of_range_status(quote!([70_000]))]
 #[case::zero_status(quote!([0]))]
 #[case::below_range_status(quote!([99]))]
+#[case::success_status(quote!([200]))]
+#[case::just_below_error_range(quote!([399]))]
 #[case::above_range_status(quote!([600]))]
 #[case::unknown_status_999(quote!([999]))]
 fn error_status_rejects_a_malformed_entry(#[case] source: proc_macro2::TokenStream) {
@@ -38,10 +40,10 @@ fn error_status_rejects_a_malformed_entry(#[case] source: proc_macro2::TokenStre
 
 #[test]
 fn error_status_accepts_the_range_bounds() {
-    let arr: syn::ExprArray = syn::parse_quote!([100, 599]);
+    let arr: syn::ExprArray = syn::parse_quote!([400, 599]);
     assert_eq!(
         extract_error_status_codes(&arr).unwrap(),
-        Some(vec![100, 599])
+        Some(vec![400, 599])
     );
 }
 
