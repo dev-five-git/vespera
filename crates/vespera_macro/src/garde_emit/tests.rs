@@ -138,6 +138,10 @@ fn range_emit_on_float_field_keeps_decimal_point() {
     let out = emit_to_string(s);
     assert!(out.contains("range :: apply"));
     assert!(out.contains("as f64"));
+    // A float bound keeps its decimal point: a bare `0` or `99` would
+    // compare against a different (integer-valued) bound.
+    assert!(out.contains("0.01f64"), "{out}");
+    assert!(out.contains("99.99f64"), "{out}");
 }
 
 #[test]

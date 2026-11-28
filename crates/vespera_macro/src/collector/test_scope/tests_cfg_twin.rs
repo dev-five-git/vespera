@@ -67,3 +67,35 @@ fn expr_attrs_of_a_verbatim_expression_is_empty() {
     let expr = syn::Expr::Verbatim(proc_macro2::TokenStream::default());
     assert_eq!(expr_attrs(&expr), &[]);
 }
+
+/// Identical-signature `cfg(test)` / `cfg(not(test))` twins of one route
+/// (round-42 MR42-1-M1): the storage holds only the twin this build compiles,
+/// so the stub is test-only in the `--test` build and the production fn is
+/// not, in the other build. Both builds are pinned through the compiler args.
+#[test]
+fn identical_signature_cfg_twins_follow_the_build_that_stored_them() {
+    let krate = crate_with(&[(
+        "twin_health.rs",
+        "#[cfg(test)]\n#[route(get, path = \"/stub\")]\npub async fn health() -> u8 { 0 }\n\
+         #[cfg(not(test))]\n#[route(get)]\npub async fn health() -> u8 { 0 }\n",
+    )]);
+    let defs = fn_definitions(&krate.path().join("src").join("twin_health.rs"));
+    assert_eq!(defs.len(), 2);
+    assert!(defs[0].test_only && !defs[1].test_only);
+    let signature = defs[0].signature.clone();
+    assert_eq!(signature, defs[1].signature);
+    {
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            "rustc\n--test",
+        );
+        assert!(route_test_only(&defs, "health", "get", &signature));
+    }
+    {
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            "rustc\n--crate-name\ndemo",
+        );
+        assert!(!route_test_only(&defs, "health", "get", &signature));
+    }
+}

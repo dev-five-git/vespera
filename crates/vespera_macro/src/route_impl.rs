@@ -139,22 +139,29 @@ pub fn current_crate_routes() -> Arc<Vec<StoredRouteInfo>> {
 }
 
 /// An HTTP status code literal of `#[route]` (`error_status` / `responses`):
-/// an integer in `100..=599`, the range an OpenAPI response key can name.
-/// Anything else (`0`, `999`, `70_000`) is a compile error with `message`.
-fn status_code_literal(elem: &syn::Expr, lit_int: &syn::LitInt, message: &str) -> syn::Result<u16> {
+/// an integer inside `range` (`100..=599` for `responses`, the range an
+/// OpenAPI response key can name; `400..=599` for `error_status`, the range
+/// `args.rs` enforces). Anything else (`0`, `999`, `70_000`) is a compile
+/// error with `message`.
+fn status_code_literal(
+    elem: &syn::Expr,
+    lit_int: &syn::LitInt,
+    range: &std::ops::RangeInclusive<u16>,
+    message: &str,
+) -> syn::Result<u16> {
     lit_int
         .base10_parse::<u16>()
         .ok()
-        .filter(|code| (100..=599).contains(code))
+        .filter(|code| range.contains(code))
         .ok_or_else(|| syn::Error::new_spanned(elem, message))
 }
 
 /// Extract the `u16` error status codes of `error_status = [...]`.
 ///
-/// Every entry must be an integer literal that names an HTTP status code
-/// (`100..=599`). A dropped entry (a named constant, an out-of-range status)
-/// would leave its response undocumented with no diagnostic, so it is a
-/// compile error instead.
+/// Every entry must be an integer literal that names an HTTP error status
+/// code (`400..=599`, the same rule `args.rs` enforces on the attribute). A
+/// dropped entry (a named constant, an out-of-range status) would leave its
+/// response undocumented with no diagnostic, so it is a compile error instead.
 fn extract_error_status_codes(arr: &syn::ExprArray) -> syn::Result<Option<Vec<u16>>> {
     let codes = arr
         .elems
@@ -166,7 +173,8 @@ fn extract_error_status_codes(arr: &syn::ExprArray) -> syn::Result<Option<Vec<u1
             }) => status_code_literal(
                 elem,
                 lit_int,
-                "#[route] `error_status` entries must be HTTP status codes (integer literals in 100..=599)",
+                &(400..=599),
+                "#[route] `error_status` entries must be HTTP error status codes (integer literals in 400..=599)",
             ),
             _ => Err(syn::Error::new_spanned(
                 elem,
@@ -276,6 +284,7 @@ fn typed_response_entry(elem: &syn::Expr) -> syn::Result<(u16, String)> {
         })) => status_code_literal(
             elem,
             lit_int,
+            &(100..=599),
             "#[route] `responses` status codes must be integer literals in 100..=599",
         )?,
         _ => return Err(syn::Error::new_spanned(elem, EXPECTED)),

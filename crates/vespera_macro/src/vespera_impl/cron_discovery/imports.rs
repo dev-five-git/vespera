@@ -1,0 +1,160 @@
+//! The `use` items of one module of the cron scan: which path a `#[cron]`
+//! attribute names there (a bare `cron`, a local alias of vespera's `cron`, or
+//! another crate's), and which aliases a `use super::*` / `use crate::*` glob
+//! brings down from the enclosing module ([`CronImports::inheriting`]).
+
+/// The `use` items of one module that decide what a bare `#[cron]` in it
+/// names (see [`CronImports::foreign`]), and the local names vespera's `cron`
+/// and the vespera crate are bound to in it.
+#[derive(Clone, Default)]
+#[allow(clippy::struct_excessive_bools)]
+pub(super) struct CronImports {
+    /// `use other::cron;`, `use other::{cron};`, `use other::job as cron;`.
+    explicit_foreign: bool,
+    /// `use vespera::cron;` (or `crate` / `self` / `super` rooted).
+    explicit_vespera: bool,
+    /// `use other::*;`.
+    foreign_glob: bool,
+    /// `use super::*;` / `use crate::*;`: the names of the enclosing module
+    /// (its own `cron` import) reach this module through the glob.
+    inheriting_glob: bool,
+    /// Every name a `use` item of this module binds (`use other::job;`,
+    /// `use vespera::cron as job;`): it shadows an inherited alias of the same
+    /// name, since an explicit import beats a glob.
+    bound: Vec<String>,
+    /// Local names of `vespera::cron` (`use vespera::cron as job;`), this
+    /// module's own and those inherited through its globs.
+    cron_aliases: Vec<String>,
+    /// Local names of the vespera crate (`use vespera as v;`), own and inherited.
+    crate_aliases: Vec<String>,
+}
+
+impl CronImports {
+    /// Whether a bare `#[cron]` in this module is another crate's attribute.
+    /// An explicit `cron` import shadows a glob, so it decides: vespera's when
+    /// it is rooted at `vespera`, `crate`, `self` or `super`, whatever the
+    /// globs bring in. Without one, a foreign glob makes the bare form foreign,
+    /// and so does an inheriting glob when the enclosing module's bare `cron`
+    /// is foreign (`inherited`). `crate::*` is approximated by the enclosing
+    /// module's decision.
+    pub(super) fn foreign(&self, inherited: bool) -> bool {
+        self.explicit_foreign
+            || (!self.explicit_vespera
+                && (self.foreign_glob || (self.inheriting_glob && inherited)))
+    }
+
+    /// The imports in effect in this module: its own, plus the aliases its
+    /// `use super::*` / `use crate::*` glob brings from `parent` (the
+    /// enclosing module's effective imports), except a name this module's own
+    /// `use` items bind. A module without such a glob sees only its own.
+    pub(super) fn inheriting(&self, parent: &Self) -> Self {
+        let mut effective = self.clone();
+        if self.inheriting_glob {
+            extend_unbound(
+                &mut effective.cron_aliases,
+                &parent.cron_aliases,
+                &self.bound,
+            );
+            extend_unbound(
+                &mut effective.crate_aliases,
+                &parent.crate_aliases,
+                &self.bound,
+            );
+        }
+        effective
+    }
+
+    /// Whether a path spelled `segments` names vespera's `cron` here: `cron`
+    /// (or an alias of it), or `vespera::cron` (or `<alias of the vespera
+    /// crate>::cron`). An alias is recognised only where this module's `use`
+    /// items (or the globs it inherits) bind it, so a `job` bound to another
+    /// crate's `cron` is not a job.
+    pub(super) fn is_cron_segments(&self, segments: &[String]) -> bool {
+        match segments {
+            [name] => name == "cron" || self.cron_aliases.contains(name),
+            [krate, name] => {
+                name == "cron" && (krate == "vespera" || self.crate_aliases.contains(krate))
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Appends each name of `inherited` that `own` lacks and `bound` does not
+/// shadow.
+fn extend_unbound(own: &mut Vec<String>, inherited: &[String], bound: &[String]) {
+    for name in inherited {
+        if !bound.contains(name) && !own.contains(name) {
+            own.push(name.clone());
+        }
+    }
+}
+
+/// The [`CronImports`] of `items` (the `use` items of one module).
+pub(super) fn cron_imports(items: &[syn::Item]) -> CronImports {
+    // `depth` counts the path segments above `tree`: 1 is a direct child of
+    // the first segment (`vespera::cron as job` or `vespera::{cron as job}`).
+    fn collect(
+        tree: &syn::UseTree,
+        root: Option<&syn::Ident>,
+        depth: usize,
+        out: &mut CronImports,
+    ) {
+        let foreign = root.is_some_and(|root| {
+            !matches!(
+                root.to_string().as_str(),
+                "vespera" | "crate" | "self" | "super"
+            )
+        });
+        let bound = match tree {
+            syn::UseTree::Name(name) => Some(name.ident.to_string()),
+            syn::UseTree::Rename(rename) => Some(rename.rename.to_string()),
+            _ => None,
+        };
+        out.bound.extend(bound);
+        match tree {
+            syn::UseTree::Path(path) => {
+                collect(&path.tree, root.or(Some(&path.ident)), depth + 1, out);
+            }
+            syn::UseTree::Name(name) if name.ident == "cron" => {
+                out.explicit_foreign |= foreign;
+                out.explicit_vespera |= root.is_some() && !foreign;
+            }
+            syn::UseTree::Rename(rename) if rename.rename == "cron" => {
+                out.explicit_foreign |= foreign;
+                out.explicit_vespera |= root.is_some() && !foreign;
+            }
+            syn::UseTree::Rename(rename)
+                if rename.ident == "cron"
+                    && depth == 1
+                    && root.is_some_and(|root| root == "vespera") =>
+            {
+                out.cron_aliases.push(rename.rename.to_string());
+            }
+            syn::UseTree::Rename(rename) if rename.ident == "vespera" && root.is_none() => {
+                out.crate_aliases.push(rename.rename.to_string());
+            }
+            syn::UseTree::Group(group) => {
+                for tree in &group.items {
+                    collect(tree, root, depth, out);
+                }
+            }
+            // A glob may bring in another crate's `cron`; only vespera's (or
+            // this crate's own) globs leave the bare form vespera's. A
+            // `super` / `crate` glob also brings in the enclosing names.
+            syn::UseTree::Glob(_) => {
+                out.foreign_glob |= foreign;
+                out.inheriting_glob |=
+                    root.is_some_and(|root| matches!(root.to_string().as_str(), "super" | "crate"));
+            }
+            _ => {}
+        }
+    }
+    let mut imports = CronImports::default();
+    for item in items {
+        if let syn::Item::Use(item) = item {
+            collect(&item.tree, None, 0, &mut imports);
+        }
+    }
+    imports
+}
