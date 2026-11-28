@@ -724,9 +724,13 @@ wraps the raw call with per-thread reusable direct buffers (64 KiB
 initial, doubling up to the `vespera.direct.maxBufferBytes` system
 property, default 4 MiB) and returns a read-only view of the response
 valid until the next dispatch on the same thread.  On response
-overflow the finished response stays in a native stash (at most 1024
-entries, 30 s TTL) and is copied into a grown pooled buffer — **the
-handler is not re-run**, whatever `retryOnOverflow` says.  Only a
+overflow the finished response stays in a native stash and is copied into
+a grown pooled buffer — **the handler is not re-run**, whatever
+`retryOnOverflow` says.  The stash holds at most 4096 entries and 1 GiB
+(hard ceilings); an entry lives 30 s unless it is redeemed, and a live
+entry is never evicted early.  A fresh overflow past a ceiling is answered
+with a retryable `503` wire (the handler already ran for it, so the caller
+retries the whole request).  Only a
 response beyond the pool cap or a `text/event-stream` response throws
 `BufferTooSmallException(requiredSize)` (the stash entry is released);
 the Spring proxy streams those from the stash instead.

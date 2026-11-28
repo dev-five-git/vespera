@@ -2,7 +2,10 @@ name: Re-attest release
 
 # Records the provenance + SBOM attestations of an ALREADY PUBLISHED release,
 # for a version whose CI.yml `attest` job never ran or failed for good (0.6.0:
-# the SBOMs lacked a CycloneDX serialNumber, fixed in #217). Publishes nothing.
+# the SBOMs lacked a CycloneDX serialNumber, fixed in #217). It publishes no
+# package to a registry: the `attest` job attaches the SBOM files to the existing
+# GitHub releases (`contents: write`, best effort, `gh release upload --clobber`)
+# and attests them.
 #
 # `collect` downloads the published files from the registries (crates.io with
 # its SHA-256 checksum, Maven Central / the Gradle Plugin Portal with their
