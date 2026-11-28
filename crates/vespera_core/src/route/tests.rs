@@ -490,6 +490,26 @@ fn callback_reference_object_is_refused_on_load() {
     assert!(result.is_err(), "a Callback $ref must be refused");
 }
 
+/// Round 45 (CJ2-L2): a `$ref` key in a callback map is refused whether
+/// it is the callback's only key, a string, or an object (which used to
+/// load as an empty Path Item, the `$ref` read as a runtime expression).
+#[rstest]
+#[case::object_value(serde_json::json!({"onEvent": {"$ref": {}}}))]
+#[case::object_value_with_sibling(serde_json::json!({"onEvent": {"$ref": {}, "{$request.body#/url}": {"post": {"responses": {"200": {"description": "ok"}}}}}}))]
+#[case::string_value(serde_json::json!({"onEvent": {"$ref": "#/components/callbacks/OnEvent"}}))]
+fn callback_reference_key_is_refused_on_load(#[case] callbacks: serde_json::Value) {
+    let error = serde_json::from_value::<Operation>(serde_json::json!({
+        "responses": { "200": { "description": "ok" } },
+        "callbacks": callbacks
+    }))
+    .expect_err("a Callback $ref must be refused")
+    .to_string();
+    assert!(
+        error.contains("a Reference Object (`$ref`) is not supported as a Callback Object"),
+        "{error}"
+    );
+}
+
 #[test]
 fn inline_security_scheme_without_a_reference_still_loads() {
     let json = serde_json::json!({"type": "http", "scheme": "bearer"});
@@ -510,4 +530,131 @@ fn nested_reference_objects_in_media_type_and_operation_are_refused() {
         "get": {"$ref": "#/paths/~1pets/get"}
     }));
     assert!(get.is_err(), "an Operation $ref must be refused");
+}
+
+/// Round 45 (CJ2-L1): an inline-only type reads a repeated key as the
+/// derive does (`duplicate field`), not as a last-one-wins `Value`. The
+/// JSON text is parsed with `from_str` because a `Value` input cannot hold
+/// a duplicate key in the first place.
+#[rstest]
+#[case::operation(
+    from_text::<Operation>,
+    r#"{"summary":"a","summary":"b","responses":{"200":{"description":"ok"}}}"#,
+    "Operation"
+)]
+#[case::operation_nested_parameter(
+    from_text::<Operation>,
+    r#"{"parameters":[{"name":"q","name":"r","in":"query"}],"responses":{"200":{"description":"ok"}}}"#,
+    "Operation"
+)]
+#[case::parameter(from_text::<Parameter>, r#"{"name":"q","name":"q","in":"query"}"#, "Parameter")]
+#[case::header(from_text::<Header>, r#"{"description":"a","description":"b"}"#, "Header")]
+#[case::example(from_text::<Example>, r#"{"summary":"a","summary":"b"}"#, "Example")]
+#[case::response(from_text::<Response>, r#"{"description":"a","description":"b"}"#, "Response")]
+#[case::request_body(from_text::<RequestBody>, r#"{"content":{},"content":{}}"#, "RequestBody")]
+#[case::media_type(from_text::<MediaType>, r#"{"example":1,"example":2}"#, "MediaType")]
+#[case::encoding(from_text::<Encoding>, r#"{"contentType":"a","contentType":"b"}"#, "Encoding")]
+#[case::security_scheme(
+    from_text::<SecurityScheme>,
+    r#"{"type":"http","type":"apiKey"}"#,
+    "SecurityScheme"
+)]
+fn inline_only_types_refuse_a_repeated_key(
+    #[case] read: fn(&str) -> Result<(), String>,
+    #[case] json: &str,
+    #[case] what: &str,
+) {
+    let error = read(json).expect_err("a repeated key must be refused");
+    assert!(error.contains("duplicate field"), "{what}: {error}");
+}
+
+/// The text-parsing twin of [`rejection`]: `Err` carries the message.
+fn from_text<T: serde::de::DeserializeOwned>(json: &str) -> Result<(), String> {
+    serde_json::from_str::<T>(json)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Accepted input is untouched: the buffered read yields the same `Value`
+/// as `serde_json::Value` for every JSON shape, and each visitor entry the
+/// buffering uses (bool, integers, float, string, null, array, object)
+/// agrees with it.
+#[rstest]
+#[case::null("null")]
+#[case::bool_true("true")]
+#[case::negative_integer("-7")]
+#[case::unsigned_integer("18446744073709551615")]
+#[case::float("1.5")]
+#[case::escaped_string(r#""a\"b\n\u00e9""#)]
+#[case::array(r#"[1,"two",[3],{"four":4}]"#)]
+#[case::nested_object(r#"{"a":{"b":[true,null,-1.25]},"c":""}"#)]
+fn strict_value_matches_serde_json_value(#[case] json: &str) {
+    let strict = serde_json::from_str::<StrictValue>(json).unwrap().0;
+    let plain = serde_json::from_str::<serde_json::Value>(json).unwrap();
+    assert_eq!(strict, plain);
+}
+
+/// A deserializer that hands the visitor one of the methods a JSON text
+/// never reaches (`visit_none`, `visit_some`, `visit_string`), the way a
+/// non-JSON deserializer may.
+enum Probe {
+    None,
+    Some,
+    Owned(String),
+}
+
+impl<'de> serde::Deserializer<'de> for Probe {
+    type Error = serde_json::Error;
+
+    fn deserialize_any<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        match self {
+            Self::None => visitor.visit_none(),
+            Self::Some => visitor.visit_some(serde_json::Value::Bool(true)),
+            Self::Owned(text) => visitor.visit_string(text),
+        }
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes
+        byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map
+        struct enum identifier ignored_any
+    }
+}
+
+#[rstest]
+#[case::none(Probe::None, serde_json::Value::Null)]
+#[case::some(Probe::Some, serde_json::Value::Bool(true))]
+#[case::owned_string(Probe::Owned("x".to_owned()), serde_json::json!("x"))]
+fn strict_value_takes_every_visitor_method(
+    #[case] probe: Probe,
+    #[case] expected: serde_json::Value,
+) {
+    assert_eq!(StrictValue::deserialize(probe).unwrap().0, expected);
+}
+
+/// A repeated key is refused at every depth, not only at the top level.
+#[test]
+fn strict_value_refuses_a_nested_repeated_key() {
+    let error = serde_json::from_str::<StrictValue>(r#"{"a":[{"b":1,"b":2}]}"#)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(error.contains("duplicate field `b`"), "{error}");
+}
+
+/// The visitor's `expecting` text (it names the expected shape in every
+/// type-mismatch error a derived or buffered read reports).
+#[test]
+fn strict_value_visitor_describes_what_it_expects() {
+    let error = <serde_json::Error as serde::de::Error>::invalid_type(
+        serde::de::Unexpected::Bool(true),
+        &StrictValueVisitor,
+    );
+    assert!(
+        error.to_string().contains("expected any JSON value"),
+        "{error}"
+    );
 }

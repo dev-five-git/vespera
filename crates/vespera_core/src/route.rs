@@ -287,6 +287,91 @@ fn present_value<'de, D: serde::Deserializer<'de>>(
     serde_json::Value::deserialize(deserializer).map(Some)
 }
 
+/// A JSON value read the way a derived `Deserialize` reads an object: a
+/// repeated key is an error (`duplicate field`), at every depth. A plain
+/// `serde_json::Value` keeps the last duplicate silently, which let
+/// `{"summary":"a","summary":"b"}` load where the derive refuses it.
+///
+/// Every other input yields the same `Value` `serde_json::Value` would.
+pub(crate) struct StrictValue(pub(crate) serde_json::Value);
+
+impl<'de> Deserialize<'de> for StrictValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(StrictValueVisitor).map(Self)
+    }
+}
+
+struct StrictValueVisitor;
+
+impl<'de> serde::de::Visitor<'de> for StrictValueVisitor {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::from(value))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::from(value))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::from(value))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(value.to_owned()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(value))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        StrictValue::deserialize(deserializer).map(|value| value.0)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(StrictValue(item)) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(serde_json::Value::Array(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        use serde::de::Error as _;
+
+        let mut object = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let StrictValue(value) = map.next_value()?;
+            if object.contains_key(&key) {
+                return Err(A::Error::custom(format!("duplicate field `{key}`")));
+            }
+            object.insert(key, value);
+        }
+        Ok(serde_json::Value::Object(object))
+    }
+}
+
 /// `Serialize` / `Deserialize` for an inline-only type (`remote = "Self"`
 /// derives the inherent twins used here). A Reference Object is refused by
 /// name: it must not be read as the type's own fields, nor reported as a
@@ -309,7 +394,8 @@ macro_rules! inline_only_serde {
         impl<'de> Deserialize<'de> for $ty {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 use serde::de::Error as _;
-                let value = serde_json::Value::deserialize(deserializer)?;
+                let $crate::route::StrictValue(value) =
+                    <$crate::route::StrictValue as serde::Deserialize>::deserialize(deserializer)?;
                 if value.get("$ref").is_some() {
                     return Err(D::Error::custom(concat!(
                         "a Reference Object (`$ref`) is not supported as a ",

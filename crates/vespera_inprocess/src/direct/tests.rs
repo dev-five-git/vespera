@@ -404,6 +404,90 @@ async fn legacy_overflow_of_a_materialised_response_reports_its_size() {
     assert_eq!(result, DirectWriteResult::Overflow(wire.len()));
 }
 
+/// A never-ending event stream must not be drained by the legacy tail: its
+/// body yields one frame and then never ends, so draining it would block the
+/// call forever.  The legacy result refuses it up front with a bounded `500`.
+#[rstest]
+#[case::plain("text/event-stream")]
+#[case::with_parameters("text/event-stream; charset=utf-8")]
+#[tokio::test]
+async fn legacy_event_stream_is_refused_without_draining(#[case] content_type: &'static str) {
+    use futures_util::StreamExt as _;
+
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static(content_type),
+    );
+    let never_ending = Body::from_stream(
+        futures_util::stream::iter(vec![Ok::<_, Infallible>(Bytes::from_static(
+            b"data: 1
+
+",
+        ))])
+        .chain(futures_util::stream::pending::<Result<Bytes, Infallible>>()),
+    );
+    // A 1 KiB buffer, the smallest one a direct transport dispatches into.
+    let mut out = vec![0u8; MIN_DIRECT_OUT_BYTES];
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        finish_direct_write(
+            &mut out,
+            200,
+            headers,
+            ResponseMetadata::current(),
+            never_ending,
+        ),
+    )
+    .await;
+    let Ok(DirectWriteResult::Complete(n)) = result else {
+        panic!("a never-ending event stream must be refused, not drained");
+    };
+    assert_eq!(status(&out[..n]), 500);
+    assert_eq!(
+        &out[..n],
+        &error_wire(500, EVENT_STREAM_LEGACY_MSG)[..],
+        "the refusal is the bounded error wire"
+    );
+}
+
+/// The legacy event-stream `422` takes the same up-front refusal (no hoist
+/// prefetch that would wait on the body).
+#[tokio::test]
+async fn legacy_event_stream_422_is_refused_without_the_prefetch() {
+    use futures_util::StreamExt as _;
+
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/event-stream"),
+    );
+    let never_ending = Body::from_stream(
+        futures_util::stream::iter(vec![Ok::<_, Infallible>(Bytes::from_static(
+            b"data: bad
+
+",
+        ))])
+        .chain(futures_util::stream::pending::<Result<Bytes, Infallible>>()),
+    );
+    let mut out = vec![0u8; MIN_DIRECT_OUT_BYTES];
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        finish_direct_write(
+            &mut out,
+            422,
+            headers,
+            ResponseMetadata::current(),
+            never_ending,
+        ),
+    )
+    .await;
+    let Ok(DirectWriteResult::Complete(n)) = result else {
+        panic!("an event-stream 422 must not wait for its body");
+    };
+    assert_eq!(status(&out[..n]), 500);
+}
+
 /// Every wire response synthesized after the handler ran fits
 /// [`MIN_DIRECT_OUT_BYTES`], so a direct transport that refuses smaller
 /// `out` buffers never makes a caller retry (re-run) a failing handler.
@@ -418,6 +502,7 @@ fn synthesized_post_handler_wires_fit_the_minimum_direct_out() {
         error_wire(500, crate::internal::HEADER_TOO_LARGE_MSG),
         response_too_large_wire(usize::MAX),
         error_wire(500, &crate::bounded::response_alloc_failed_msg(usize::MAX)),
+        error_wire(500, EVENT_STREAM_LEGACY_MSG),
     ];
     #[cfg(feature = "runtime")]
     wires.push(error_wire(503, crate::runtime::RUNTIME_SHUT_DOWN_MSG));

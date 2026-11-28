@@ -211,7 +211,8 @@ pub unsafe extern "C" fn vespera_dispatch(
 /// ranges are rejected).  An `out_capacity` below [`MIN_DIRECT_OUT_BYTES`]
 /// (including the NULL / 0 size probe) is answered with
 /// [`VESPERA_OVERFLOW`] and `*written = MIN_DIRECT_OUT_BYTES` without
-/// dispatching.
+/// dispatching.  A `text/event-stream` response is answered with a `500`
+/// wire response (naming the streaming mode) without its body being read.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vespera_dispatch_into(
     request: *const u8,

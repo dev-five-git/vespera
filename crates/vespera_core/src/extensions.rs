@@ -88,6 +88,15 @@ where
     callbacks
         .into_iter()
         .map(|(name, callback)| {
+            // A Callback takes no Reference Object (route docs): a `$ref`
+            // key is refused here, bare or with siblings, instead of being
+            // read as a runtime expression (`{"$ref": {}}` would load as an
+            // empty Path Item).
+            if callback.contains_key("$ref") {
+                return Err(D::Error::custom(format_args!(
+                    "{name}: a Reference Object (`$ref`) is not supported as a Callback Object; inline the referenced Callback"
+                )));
+            }
             // Name the callback as well as the runtime expression that
             // without_extensions prefixes: `onEvent: {$url}: ...`.
             without_extensions::<PathItem, D::Error>(callback)

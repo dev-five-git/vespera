@@ -410,6 +410,11 @@ fn test_typed_multipart_deref_mut() {
 #[case::bidi_override("\u{202E}exe.txt", "\\u{202e}exe.txt")]
 #[case::bidi_isolate("a\u{2066}b\u{2069}", "a\\u{2066}b\\u{2069}")]
 #[case::zero_width_and_separators("a\u{200B}b\u{2028}c\u{2029}", "a\\u{200b}b\\u{2028}c\\u{2029}")]
+#[case::arabic_letter_mark("a\u{061C}b", "a\\u{61c}b")]
+#[case::mongolian_vowel_separator("a\u{180E}b", "a\\u{180e}b")]
+#[case::word_joiner_and_invisible_plus("a\u{2060}b\u{2064}", "a\\u{2060}b\\u{2064}")]
+#[case::byte_order_mark_and_interlinear_anchor("\u{FEFF}a\u{FFF9}", "\\u{feff}a\\u{fff9}")]
+#[case::soft_hyphen_and_tag_character("a\u{00AD}b\u{E0041}", "a\\u{ad}b\\u{e0041}")]
 fn reflected_field_name_is_bounded_and_printable(#[case] name: &str, #[case] shown: &str) {
     let err = TypedMultipartError::UnknownField {
         field_name: name.to_owned(),

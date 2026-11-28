@@ -370,6 +370,16 @@ fn resumable_dispatch_never_reruns_a_handler() {
         direct_overflow_code(vespera_inprocess::MIN_DIRECT_OUT_BYTES)
     );
     assert_eq!(CALLS.load(std::sync::atomic::Ordering::SeqCst), 0);
+    // The handle area is zeroed (no stale token from an earlier overflow).
+    assert_eq!(tiny[..STASH_HANDLE_LEN], [0; STASH_HANDLE_LEN]);
+    assert_eq!(
+        tiny[STASH_HANDLE_LEN..],
+        [0xAA; vespera_inprocess::MIN_DIRECT_OUT_BYTES - 1 - STASH_HANDLE_LEN]
+    );
+    // A buffer shorter than the handle area is zeroed in full.
+    let mut shorter = [0xAAu8; 4];
+    assert!(dispatch_resumable(&request, &mut shorter).is_some());
+    assert_eq!(shorter, [0; 4]);
 
     // A panicking handler's `500` wire fits the minimum: complete, and the
     // handler ran exactly once.

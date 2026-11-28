@@ -38,6 +38,11 @@ use crate::wire::{
 /// size with `-(MIN_DIRECT_OUT_BYTES)` **without** dispatching.
 pub const MIN_DIRECT_OUT_BYTES: usize = 1024;
 
+/// Body of the `500` the legacy direct-write tail answers for a
+/// `text/event-stream` response (see [`finish_direct_write`]).
+pub const EVENT_STREAM_LEGACY_MSG: &str =
+    "text/event-stream needs a streaming dispatch mode (the direct-write API cannot deliver it)";
+
 /// Outcome of [`crate::dispatch_into_async`] / [`crate::dispatch_into`].
 ///
 /// Carries the truncation/overflow discriminant the FFI bridge relies on
@@ -342,6 +347,13 @@ fn is_event_stream(headers: &http::HeaderMap) -> bool {
 
 /// Legacy direct-write tail ([`crate::dispatch_into_async`] and the borrowed
 /// sibling): exact-size overflow reporting, the response is discarded.
+///
+/// A `text/event-stream` response is refused up front with a `500` wire
+/// response ([`EVENT_STREAM_LEGACY_MSG`]) and its body is never polled: the
+/// legacy result cannot hand an incremental stream back, and draining a
+/// stream that may never end would block the caller forever.  The
+/// resumable tail ([`finish_resumable`] with `stream_event_streams`) is the
+/// way to deliver one.
 pub async fn finish_direct_write(
     out: &mut [u8],
     status: u16,
@@ -349,6 +361,9 @@ pub async fn finish_direct_write(
     metadata: ResponseMetadata,
     body: Body,
 ) -> DirectWriteResult {
+    if is_event_stream(&headers) {
+        return write_wire_into(out, &error_wire(500, EVENT_STREAM_LEGACY_MSG));
+    }
     match finish_resumable(&mut *out, status, headers, metadata, body, false).await {
         ResumableDirectWrite::Complete(n) => DirectWriteResult::Complete(n),
         ResumableDirectWrite::Overflow(pending) => pending.into_exact_overflow(out).await,
