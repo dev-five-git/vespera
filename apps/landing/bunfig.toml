@@ -6,8 +6,8 @@
 # loaded), and `bun-test-env-dom` installs happy-dom + readable HTML snapshots.
 #
 # Bun only reads `bunfig.toml` from the current working directory, and the
-# plugin resolves `devup.json` / writes `df/` relative to it too — so these
-# tests must run with `apps/landing` as the CWD (`cd apps/landing && bun test`,
-# or the package's own `test` script). The root `bun test` reads the mirrored
-# root `bunfig.toml` instead, so it does not need this file.
+# plugin resolves `devup.json` / writes `df/` relative to it too. This copy is
+# the one read by `cd apps/landing && bun test` (or this package's own `test`
+# script); the root `bun test` reads the root `bunfig.toml`. Keep the two
+# copies identical.
 preload = ["@devup-ui/bun-plugin", "bun-test-env-dom"]
