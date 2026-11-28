@@ -485,6 +485,30 @@ fn start_once_schedules_a_guard_only_once() {
     assert_eq!(ONCE_SECOND_TICKS.load(Ordering::SeqCst), 0);
 }
 
+/// A failed start leaves the guard unset, so the next `start_once` starts the
+/// jobs; once a start succeeds the guard stays latched and `start` is not
+/// invoked again.
+#[test]
+fn a_failed_start_once_leaves_the_guard_for_a_retry() {
+    static GUARD: Once = Once::new();
+    let mut attempts = Vec::new();
+    start_once_with(&GUARD, [CronJob::new("* * * * * *", tick)], |jobs| {
+        attempts.push(jobs.len());
+        false
+    });
+    assert!(!GUARD.is_completed(), "a failed start must not latch");
+
+    start_once_with(&GUARD, [CronJob::new("* * * * * *", tick)], |jobs| {
+        attempts.push(jobs.len());
+        true
+    });
+    assert!(GUARD.is_completed());
+    start_once_with(&GUARD, [CronJob::new("* * * * * *", tick)], |_| {
+        panic!("a latched guard must not start the jobs again")
+    });
+    assert_eq!(attempts, [1, 1]);
+}
+
 /// Two `vespera!` invocations of one crate (two guards) hand over the same
 /// crate-wide job: it is scheduled by the first only.
 #[test]

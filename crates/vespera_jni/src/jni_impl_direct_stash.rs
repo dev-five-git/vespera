@@ -112,6 +112,11 @@ struct Stash {
     entries: BTreeMap<u64, Entry>,
     /// Sum of the byte counts of `entries`.
     held: usize,
+    /// Entries a fetch has taken out and not yet put back or released (see
+    /// [`Stash::check_out`]); they still count toward the ceilings.
+    checked_out: usize,
+    /// Sum of the byte counts of the checked-out entries.
+    checked_out_bytes: usize,
     /// Set by [`clear_stash`] (the shutdown's cleanup): no entry is taken
     /// after it, so nothing is stored that no cleanup would ever release.
     closed: bool,
@@ -138,9 +143,10 @@ impl Stash {
     /// Store `pending` under `token` (`None` = a fresh token).  Expired
     /// entries go to `evicted` first; then a fresh stash is refused (the
     /// response comes back with the [`Refusal`]) when it would exceed
-    /// `limits`, while a re-put over a live token always stores (it replaces
-    /// its own entry, so the count does not grow).  A closed stash refuses
-    /// everything.
+    /// `limits`, counting the checked-out entries too.  A re-put over a token
+    /// always stores: the fetch re-stashing it already counted its space as
+    /// checked out, so the stash cannot overshoot the ceilings.  A closed
+    /// stash refuses everything.
     fn put(
         &mut self,
         token: Option<u64>,
@@ -159,8 +165,10 @@ impl Stash {
             evicted.extend(self.remove(token));
             token
         } else {
-            let fits = self.entries.len() < limits.entries
-                && (self.held == 0 || self.held.saturating_add(incoming) <= limits.bytes);
+            let in_use = self.entries.len() + self.checked_out;
+            let held = self.held + self.checked_out_bytes;
+            let fits = in_use < limits.entries
+                && (held == 0 || held.saturating_add(incoming) <= limits.bytes);
             if !fits {
                 return Err((Refusal::Full, pending));
             }
@@ -177,6 +185,25 @@ impl Stash {
         let (at, pending, bytes) = self.entries.remove(&token)?;
         self.held -= bytes;
         Some((at, pending))
+    }
+
+    /// Take `token`'s entry out for a fetch.  Its bytes move from `held` to
+    /// `checked_out_bytes` and the entry counts as checked out, so a fresh
+    /// stash cannot fill the ceilings while the fetch runs and then overshoot
+    /// them with the re-put.  The fetch gives the count back through
+    /// [`Stash::release_checkout`] (its re-put and its drop).
+    fn check_out(&mut self, token: u64) -> Option<(PendingDirectResponse, usize)> {
+        let (_, pending, bytes) = self.entries.remove(&token)?;
+        self.held -= bytes;
+        self.checked_out += 1;
+        self.checked_out_bytes += bytes;
+        Some((pending, bytes))
+    }
+
+    /// Release a [`Stash::check_out`] count of `bytes`.
+    fn release_checkout(&mut self, bytes: usize) {
+        self.checked_out -= 1;
+        self.checked_out_bytes -= bytes;
     }
 
     /// Move every entry older than [`STASH_TTL`] into `evicted`.  The only
@@ -198,8 +225,24 @@ static STASH: Mutex<Stash> = Mutex::new(Stash {
     next: 1,
     entries: BTreeMap::new(),
     held: 0,
+    checked_out: 0,
+    checked_out_bytes: 0,
     closed: false,
 });
+
+/// An entry a fetch took out of the stash (see [`Stash::check_out`]).  Its
+/// count is released when it is dropped, so a fetch that ends early (a panic
+/// unwinding out of the body read) cannot leave the ceilings reduced.
+struct CheckedOut {
+    token: u64,
+    bytes: usize,
+}
+
+impl Drop for CheckedOut {
+    fn drop(&mut self) {
+        lock_stash().release_checkout(self.bytes);
+    }
+}
 
 fn lock_stash() -> std::sync::MutexGuard<'static, Stash> {
     STASH
@@ -245,6 +288,21 @@ fn stash_take(token: u64) -> Option<PendingDirectResponse> {
 /// Take a stashed response for streaming (`stream0`).
 pub fn take_stashed(token: jlong) -> Option<PendingDirectResponse> {
     u64::try_from(token).ok().and_then(stash_take)
+}
+
+/// Take a stashed response for a fetch (`fetch0`), sweeping expired entries
+/// first.  The entry keeps counting toward the ceilings until the returned
+/// [`CheckedOut`] is dropped (see [`Stash::check_out`]).
+fn check_out_stashed(token: jlong) -> Option<(CheckedOut, PendingDirectResponse)> {
+    let token = u64::try_from(token).ok()?;
+    let mut evicted = Vec::new();
+    let checked = {
+        let mut stash = lock_stash();
+        stash.sweep(Instant::now(), &mut evicted);
+        stash.check_out(token)
+    };
+    drop(evicted);
+    checked.map(|(pending, bytes)| (CheckedOut { token, bytes }, pending))
 }
 
 /// Drop every stashed response and close the stash (the runtime shutdown's
@@ -458,7 +516,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_fetch0<'local
 /// Redeem stash entry `token` into `out` (the body of `fetch0`, run under
 /// its panic guard).
 pub fn fetch_into(token: jlong, out: &mut [u8]) -> jint {
-    let Some(pending) = take_stashed(token) else {
+    let Some((checked, pending)) = check_out_stashed(token) else {
         // `shutdown_runtime` clears the stash once it has drained the
         // leases — possibly between `dispatchResumable0` and this fetch:
         // answer the retryable `503` every other request gets, not "expired".
@@ -468,17 +526,19 @@ pub fn fetch_into(token: jlong, out: &mut [u8]) -> jint {
         return DIRECT_UNREPRESENTABLE;
     };
     // Re-stashed inside the future, under the fetch's runtime lease (see
-    // `stash_overflow`); refused once the stash is closed.
+    // `stash_overflow`); refused once the stash is closed.  The entry stayed
+    // counted as checked out meanwhile, so its re-put never overshoots the
+    // ceilings that concurrent fresh stashes respected.
     let fetched = block_on_shared_runtime(async {
         match pending.write_into(&mut *out).await {
             ResumableDirectWrite::Complete(n) => Some(direct_complete_code(n)),
             ResumableDirectWrite::Overflow(pending) => {
                 let code = pending_code(&pending);
-                let key = u64::try_from(token).unwrap_or_default();
-                stash_put(Some(key), pending).ok().map(|_| code)
+                stash_put(Some(checked.token), pending).ok().map(|_| code)
             }
         }
     });
+    drop(checked);
     // No runtime (shut down, before or during the fetch): the stashed
     // response is dropped; answer with the runtime-unavailable wire when it
     // fits.
@@ -558,6 +618,8 @@ mod tests {
             next: 1,
             entries: BTreeMap::new(),
             held: 0,
+            checked_out: 0,
+            checked_out_bytes: 0,
             closed: false,
         }
     }
@@ -696,6 +758,45 @@ mod tests {
                 "an unrelated entry was evicted by the re-put"
             );
         }
+    }
+
+    /// A fetch that has taken its entry out keeps that entry counted: a fresh
+    /// stash that the ceiling admits only without the checkout is refused
+    /// while the fetch runs, and the fetch's re-put under its token stores
+    /// anyway (its space was never given away).  Releasing the checkout then
+    /// leaves exactly the re-stashed entries counted.  Local `Stash`, so it
+    /// does not race the process-global one.
+    #[test]
+    fn checked_out_entry_counts_toward_the_ceilings_until_released() {
+        let mut stash = local();
+        let now = Instant::now();
+        let caps = limits(2, usize::MAX);
+        let mut evicted = Vec::new();
+        let first = stash
+            .put(None, now, pending(), caps, &mut evicted)
+            .expect("room");
+        stash
+            .put(None, now, pending(), caps, &mut evicted)
+            .expect("room");
+        let (taken, bytes) = stash.check_out(first).expect("stashed");
+        assert_eq!(stash.entries.len(), 1);
+        assert_eq!(stash.checked_out, 1);
+
+        let (refusal, refused) = stash
+            .put(None, now, pending(), caps, &mut evicted)
+            .expect_err("the checked-out entry counts toward the ceiling");
+        assert_eq!(refusal, Refusal::Full);
+        drop((refused, taken));
+
+        let restashed = stash
+            .put(Some(first), now, pending(), caps, &mut evicted)
+            .expect("a re-put is never refused");
+        assert_eq!(restashed, first);
+        stash.release_checkout(bytes);
+        assert_eq!(stash.checked_out, 0);
+        assert_eq!(stash.checked_out_bytes, 0);
+        assert_eq!(stash.entries.len(), 2);
+        assert!(evicted.is_empty(), "nothing live was evicted");
     }
 
     /// The count ceiling refuses a fresh stash (`Full`) and hands the response

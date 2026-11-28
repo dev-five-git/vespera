@@ -667,3 +667,14 @@ fn dangling_ref_chain_keeps_the_first_reference() {
         Some("#/components/pathItems/A")
     );
 }
+
+/// An empty incoming `tags` array adds nothing, so a receiver without tags
+/// stays without them (no `"tags": []` in the merged document).
+#[test]
+fn empty_incoming_tags_do_not_create_a_tags_array() {
+    let mut parent = doc(json!({}));
+    parent.merge(doc(json!({"tags": []})));
+    assert!(parent.tags.is_none());
+    let value = serde_json::to_value(&parent).unwrap();
+    assert!(value.get("tags").is_none());
+}

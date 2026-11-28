@@ -173,14 +173,41 @@ impl CronJob {
 /// `vespera!` emits one `static` guard per invocation, so each app's jobs are
 /// scheduled once per process no matter how often its router is built.
 ///
-/// The jobs run on the Tokio runtime current at the FIRST call (see
+/// The jobs run on the Tokio runtime current at the FIRST successful call (see
 /// [`start`]) and are never restarted: if that runtime is short-lived — a
 /// `#[tokio::test]`, or a temporary `Runtime::new()?.block_on(create_app())`
 /// used only to dump the OpenAPI document or warm up — the jobs stop with it.
 /// Build the app first on the runtime that serves it (or outside any runtime,
 /// which uses a dedicated `vespera-cron` thread).
+///
+/// A call whose start fails (no scheduler thread could be started, or a
+/// host-loaded library's shared runtime was already shut down) leaves the
+/// guard unset, so a later call retries — the same release [`start_once_for_crate`]
+/// performs for its claims.
 pub fn start_once(guard: &'static Once, jobs: impl IntoIterator<Item = CronJob>) {
-    guard.call_once(|| start(jobs));
+    start_once_with(guard, jobs, start_jobs);
+}
+
+/// Serialises [`start_once`] calls (see [`start_once_with`]).
+static START_ONCE_LOCK: Mutex<()> = Mutex::new(());
+
+/// [`start_once`] with the start step injected.  Serialised by a lock so two
+/// calls cannot both see an unset guard and start the jobs twice; the guard is
+/// marked only when `start` reports success.
+fn start_once_with(
+    guard: &'static Once,
+    jobs: impl IntoIterator<Item = CronJob>,
+    start: impl FnOnce(Vec<CronJob>) -> bool,
+) {
+    let _serial = START_ONCE_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if guard.is_completed() {
+        return;
+    }
+    if start(jobs.into_iter().collect()) {
+        guard.call_once(|| {});
+    }
 }
 
 /// [`start_once`] for the jobs of one crate, each job at most once per

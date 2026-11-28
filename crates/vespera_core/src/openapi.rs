@@ -709,7 +709,9 @@ impl OpenApi {
         // string compare over an already-resident `Vec` is cheaper than
         // allocating a set and cloning every existing + incoming tag name.
         // Net: zero allocations and zero `String` clones on the merge path.
-        if let Some(other_tags) = other.tags {
+        // An empty incoming `tags` array must not materialise `Some([])` on a
+        // receiver that had none (it would serialise as `"tags": []`).
+        if let Some(other_tags) = other.tags.filter(|tags| !tags.is_empty()) {
             let self_tags = self.tags.get_or_insert_with(Vec::new);
             for tag in other_tags {
                 if !self_tags.iter().any(|existing| existing.name == tag.name) {
