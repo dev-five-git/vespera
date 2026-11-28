@@ -8,7 +8,8 @@ import java.util.function.Consumer;
  * (see {@link DirectStash}): it can be streamed with {@link #streamTo} — the
  * handler is <strong>not</strong> re-run — or released with {@link #discard}.
  * Exactly one of the two must be called (an unredeemed entry expires after
- * 30 s).  Raised internally by the pooled DIRECT path when the response is
+ * 30 s; the native stash never evicts it earlier, see {@link DirectStash}).
+ * Raised internally by the pooled DIRECT path when the response is
  * an event stream or exceeds the pooled buffer cap; public callers only see
  * the plain {@link VesperaBridge.BufferTooSmallException} supertype.
  */

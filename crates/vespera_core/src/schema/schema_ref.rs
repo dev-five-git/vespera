@@ -487,7 +487,9 @@ pub fn escape_schema_name(name: &str) -> String {
 
 /// Inverse of [`escape_schema_name`]: percent-decode, then undo the JSON
 /// Pointer escaping. A `%` not followed by two hex digits, or a `~` that is
-/// not part of `~0` / `~1`, is kept as written.
+/// not part of `~0` / `~1`, is kept as written. Decoded bytes that are not
+/// valid UTF-8 are replaced lossily (each invalid sequence becomes U+FFFD),
+/// so the result is always a valid `String`.
 #[must_use]
 pub fn unescape_schema_name(segment: &str) -> String {
     pointer_unescape(&percent_decode(segment.as_bytes()))

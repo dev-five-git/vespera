@@ -19,6 +19,20 @@ import java.util.function.Consumer;
  * stashed under the same token), {@link #stream0} (header-first streaming,
  * same contract as {@link VesperaBridge#dispatchStreamingWithHeader}) or
  * released by {@link #discard0}.  An unredeemed entry expires after 30 s.
+ *
+ * <p>Retention: the native stash never evicts an entry before its 30 s expiry
+ * (a handler already ran for it, so evicting it would fail a correct response).
+ * Only a <em>fresh</em> overflow is refused, and only past the native hard
+ * ceilings — 4096 held entries or 1 GiB held (one response larger than the
+ * byte ceiling is kept alone when nothing else is held).  A refused overflow
+ * is answered with a complete, retryable {@code 503} wire instead of a handle,
+ * so a caller never receives a handle that cannot be redeemed.
+ *
+ * <p>{@link #fetch0} returns {@code Integer.MIN_VALUE} (the
+ * {@code dispatchDirect} "unrepresentable" sentinel) only while the runtime is
+ * live and the token is unknown: it expired, was discarded, or was already
+ * redeemed.  After runtime shutdown an unknown token answers the
+ * runtime-unavailable {@code 503} wire instead.
  */
 final class DirectStash {
     /** Bytes of the overflow handle written into {@code out}. */

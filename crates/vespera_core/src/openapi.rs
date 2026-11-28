@@ -651,7 +651,9 @@ impl OpenApi {
 
         // Webhooks: union by name, self-wins on a name conflict.  Before the
         // components move below: an adopted reference reads `path_items`.
-        if let Some(other_webhooks) = other.webhooks {
+        // An empty map adds nothing (as `merge_component_map` does), so a
+        // `Some({})` from the other side does not turn a `None` into `Some({})`.
+        if let Some(other_webhooks) = non_empty_component_map(other.webhooks) {
             let self_webhooks = self.webhooks.get_or_insert_with(BTreeMap::new);
             for (name, mut item) in other_webhooks {
                 if name_clash && let Some(path_items) = path_items {
