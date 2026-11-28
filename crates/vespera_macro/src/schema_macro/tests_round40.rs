@@ -145,7 +145,8 @@ fn raw_source_names_of_rename_and_partial_resolve() {
     let dsl = "MemoSchema from crate::models::memo::Model, rename = [(\"r#type\", \"r#kind\")], partial = [\"r#type\"]";
     let tokens = dto_tokens(&dir, "crate::routes", dsl).unwrap();
     assert!(!tokens.contains("does not exist"), "{tokens}");
-    assert!(tokens.contains("kind"), "{tokens}");
+    // Renamed to `kind` and `partial`: the field is `Option<String>`.
+    assert!(tokens.contains("pub kind : Option < String >"), "{tokens}");
 }
 
 /// SM4-02: a `#[serde(transparent)]` source keeps the attribute only when the

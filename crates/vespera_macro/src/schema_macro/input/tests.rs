@@ -289,6 +289,18 @@ fn test_parse_schema_type_input_pick_span_of_a_raw_name_is_unraw() {
     assert!(input.spans.field("pick", "r#id").is_none());
 }
 
+/// L42-3-1 (round 42): a raw `omit` name is stored unraw like `pick` and
+/// `schema!`'s `omit` (`r#type` is `type`), so its span is found by that
+/// spelling.
+#[test]
+fn test_parse_schema_type_input_omit_span_of_a_raw_name_is_unraw() {
+    let tokens = quote::quote!(PublicUser from User, omit = ["r#type", "password"]);
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    assert_eq!(input.omit.unwrap(), vec!["type", "password"]);
+    assert!(input.spans.field("omit", "type").is_some());
+    assert!(input.spans.field("omit", "r#type").is_none());
+}
+
 #[test]
 fn test_parse_schema_type_input_with_pick_and_partial() {
     let tokens = quote::quote!(UpdateUser from User, pick = ["name", "email"], partial);

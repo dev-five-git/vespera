@@ -14,7 +14,8 @@ pub use conversion::convert_type_with_chrono;
 #[cfg(test)]
 pub use relations::is_field_optional_in_struct;
 pub use relations::{
-    RelationFieldInfo, convert_relation_type_to_schema_with_info, relation_target_module,
+    RelationFieldInfo, convert_relation_type_to_schema_with_info, path_target_module,
+    relation_target_module,
 };
 
 // Circular-relation integration tests live here because relation

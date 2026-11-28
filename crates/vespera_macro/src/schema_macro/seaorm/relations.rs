@@ -136,6 +136,20 @@ pub fn relation_target_module(ty: &Type, module_path: &[String]) -> Option<Vec<S
     Some(target)
 }
 
+/// The module a plain (non-relation) type path names, resolved from
+/// `module_path` like [`relation_target_module`]: `other::dto::MemoSchema`
+/// is `crate::models::other::dto`. `None` for a bare name (`MemoSchema`),
+/// which names no module.
+pub fn path_target_module(path: &syn::Path, module_path: &[String]) -> Option<Vec<String>> {
+    let segments = entity_segments(path);
+    if segments.len() < 2 || segments[0].is_empty() {
+        return None;
+    }
+    let mut target = absolute_schema_segments(&segments, module_path);
+    target.pop();
+    Some(target)
+}
+
 fn schema_path_tokens(path: &syn::Path, source_module_path: &[String]) -> TokenStream {
     path_tokens(&absolute_schema_segments(
         &entity_segments(path),

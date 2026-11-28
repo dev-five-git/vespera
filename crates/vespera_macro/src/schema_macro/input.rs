@@ -361,18 +361,17 @@ impl Parse for SchemaTypeInput {
                     if param == "pick" && fields.is_empty() {
                         return Err(empty_pick_error(ident.span()));
                     }
-                    // `pick` names are unraw (`r#id` is `id`) wherever they are
-                    // compared, so their span is looked up by that spelling too.
+                    // `omit` / `pick` names are unraw (`r#id` is `id`) wherever
+                    // they are compared, as in `schema!` (L42-3-1), so their span
+                    // is looked up by that spelling too.
+                    for lit in &fields {
+                        spans.record_source(param, lit);
+                    }
+                    let names: Vec<String> = fields.iter().map(source_field_name).collect();
                     if param == "omit" {
-                        for lit in &fields {
-                            spans.record(param, lit);
-                        }
-                        omit = Some(fields.into_iter().map(|s| s.value()).collect());
+                        omit = Some(names);
                     } else {
-                        for lit in &fields {
-                            spans.record_source(param, lit);
-                        }
-                        pick = Some(fields.iter().map(source_field_name).collect());
+                        pick = Some(names);
                     }
                 }
                 "rename" => {

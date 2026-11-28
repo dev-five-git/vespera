@@ -571,6 +571,24 @@ fn unknown_call_site_module_judges_no_name() {
     );
 }
 
+/// L42-3-2 (round 42): with a call-site module the names are judged, and the
+/// DTO's module is passed in. The previous case passed `Some(["crate"])`
+/// without a call site, where the argument was never read. A name the call
+/// site cannot resolve is refused whichever module the DTO is in.
+#[test]
+fn known_call_site_module_judges_names_against_the_dto_module() {
+    let _call_site = set_test_call_site_module("crate::routes");
+    let dto: syn::ItemStruct = syn::parse_str("struct Dto { value: Opaque }").unwrap();
+    assert_eq!(
+        unresolved::unresolved_at_call_site(&dto, None).as_deref(),
+        Some("Opaque")
+    );
+    assert_eq!(
+        unresolved::unresolved_at_call_site(&dto, Some(&["crate".to_string()])).as_deref(),
+        Some("Opaque")
+    );
+}
+
 /// SM4-L2 (round 38): the std prelude's `size_of` / `align_of` (const fns
 /// since 1.80) name nothing the call site must import, so an array length
 /// built from them is not refused.
