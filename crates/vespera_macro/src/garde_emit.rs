@@ -348,15 +348,23 @@ fn emit_rule_blocks(
         });
     }
 
+    // The runtime bound is the literal's nearest `f64`: the constraint copy is
+    // rounded outward past 2^53 for the document only (see `schema_attrs`).
+    let runtime_min = c
+        .minimum
+        .map(|v| exact.minimum.map_or(v, ExactInt::nearest_f64));
+    let runtime_max = c
+        .maximum
+        .map(|v| exact.maximum.map_or(v, ExactInt::nearest_f64));
     // ── Numeric range (minimum / maximum → range::apply) ──────────────
-    if c.minimum.is_some() || c.maximum.is_some() {
-        let bounds = numeric_some(c.minimum, exact.minimum, Bound::Min, numeric_kind)
+    if runtime_min.is_some() || runtime_max.is_some() {
+        let bounds = numeric_some(runtime_min, exact.minimum, Bound::Min, numeric_kind)
             .and_then(|min| {
-                numeric_some(c.maximum, exact.maximum, Bound::Max, numeric_kind)
+                numeric_some(runtime_max, exact.maximum, Bound::Max, numeric_kind)
                     .map(|max| (min, max))
             })
             .and_then(|bounds| {
-                empty_integer_range(numeric_kind, c.minimum, c.maximum, exact)
+                empty_integer_range(numeric_kind, runtime_min, runtime_max, exact)
                     .map_or(Ok(bounds), Err)
             });
         let (min_expr, max_expr) = match bounds {
@@ -391,10 +399,10 @@ fn emit_rule_blocks(
             }
             _ => quote!(::std::option::Option::None),
         };
-        let unreachable_min = fractional(c.minimum, min_literal);
-        let unreachable_max = fractional(c.maximum, max_literal);
+        let unreachable_min = fractional(runtime_min, min_literal);
+        let unreachable_max = fractional(runtime_max, max_literal);
         let has_fractional = numeric_kind.is_none()
-            && (!min_literal && c.minimum.is_some() || !max_literal && c.maximum.is_some());
+            && (!min_literal && runtime_min.is_some() || !max_literal && runtime_max.is_some());
         let guard = if has_fractional {
             quote! { if let ::std::option::Option::Some(__garde_error) = ::vespera::__validation::range_unsatisfiable(__garde_binding, #unreachable_min, #unreachable_max) { __garde_report.append(__garde_path(), __garde_error); } else }
         } else {
@@ -570,6 +578,14 @@ impl std::fmt::Display for ExactInt {
 
 #[cfg(feature = "validation")]
 impl ExactInt {
+    /// The `f64` nearest this literal (round to nearest, ties to even), the
+    /// bound the runtime validator enforces.
+    #[allow(clippy::cast_precision_loss)]
+    fn nearest_f64(self) -> f64 {
+        let magnitude = self.magnitude as f64;
+        if self.negative { -magnitude } else { magnitude }
+    }
+
     /// `5` / `-5` (an integer literal, optionally negated); `None` for
     /// floats and anything else.
     fn from_expr(expr: &syn::Expr) -> Option<Self> {
