@@ -46,51 +46,55 @@ pub(super) fn resolve_default_fn(
         // `Self::f` / `Type::f`: an associated function of an inherent
         // `impl` in the struct's module.
         let owner = if owner == "Self" { struct_name } else { owner };
-        if let Some(value) = inherent_fn_value(&chain, owner, fn_name, file_path) {
-            return Some(value);
+        match inherent_fn(&chain, owner, fn_name, file_path) {
+            Found::Unique(Some(value)) => return Some(value),
+            Found::Ambiguous => return None,
+            Found::Unique(None) | Found::Missing => {}
         }
     }
-    in_file(chain.clone(), module, fn_name, file_path)
-        .or_else(|| in_module_tree(&segments, &chain, file_path))
+    match in_file(chain.clone(), module, fn_name, file_path) {
+        Found::Unique(Some(value)) => Some(value),
+        // A platform twin pair of the struct's own module: the module tree
+        // would find the same pair again, so it is not searched (the search
+        // is a whole-crate parse for a file the tree does not load).
+        Found::Ambiguous => None,
+        Found::Unique(None) | Found::Missing => in_module_tree(&segments, &chain, file_path),
+    }
 }
 
 /// The function `fn_name` of the crate module `module`, following `pub use`
 /// re-exports (`pub use inner::role;`) when the module does not define it.
 fn crate_fn_value(module: &[String], fn_name: &str) -> Option<serde_json::Value> {
-    if let Some(value) =
-        module_scope::module_items(module).and_then(|items| default_fn_value(&items, fn_name))
+    if let Some(value) = module_scope::module_items(module)
+        .and_then(|items| default_fn_value(&items, fn_name).into_value())
     {
         return Some(value);
     }
-    if let Some(value) = crate::schema_macro::reexported_item(module, fn_name)
-        .and_then(|(target, name)| default_fn_value(&module_scope::module_items(&target)?, &name))
+    if let Some(value) =
+        crate::schema_macro::reexported_item(module, fn_name).and_then(|(target, name)| {
+            default_fn_value(&module_scope::module_items(&target)?, &name).into_value()
+        })
     {
         return Some(value);
     }
     // `crate::m::Type::f` (what `schema_type!` makes of a source field's
     // `Self::f`): an associated function of an inherent `impl Type` in `m`.
     let (owner, parent) = module.split_last()?;
-    associated_fn_value(&module_scope::module_items(parent)?, owner, fn_name)
+    associated_fn(&module_scope::module_items(parent)?, owner, fn_name).into_value()
 }
 
 /// The associated function `fn_name` of an inherent `impl owner` among the
 /// items of the struct's module (the file's top level plus `chain`).
-fn inherent_fn_value(
-    chain: &[String],
-    owner: &str,
-    fn_name: &str,
-    file_path: &Path,
-) -> Option<serde_json::Value> {
-    let items = inline_module_items(file_cache::get_parsed_file(file_path)?.items, chain)?;
-    associated_fn_value(&items, owner, fn_name)
+fn inherent_fn(chain: &[String], owner: &str, fn_name: &str, file_path: &Path) -> Found {
+    file_cache::get_parsed_file(file_path)
+        .and_then(|file| inline_module_items(file.items, chain))
+        .map_or(Found::Missing, |items| {
+            associated_fn(&items, owner, fn_name)
+        })
 }
 
 /// The associated function `fn_name` of an inherent `impl owner` among `items`.
-fn associated_fn_value(
-    items: &[syn::Item],
-    owner: &str,
-    fn_name: &str,
-) -> Option<serde_json::Value> {
+fn associated_fn(items: &[syn::Item], owner: &str, fn_name: &str) -> Found {
     let candidates = items
         .iter()
         .filter_map(|item| match item {
@@ -107,9 +111,11 @@ fn associated_fn_value(
             _ => None,
         })
         .flatten();
-    let func = unique_active(candidates)?;
-    let func: syn::ItemFn = syn::parse2(quote::ToTokens::to_token_stream(func)).ok()?;
-    crate::openapi_generator::extract_default_value_from_function(&func)
+    active_candidate(candidates).map(|func| {
+        syn::parse2::<syn::ItemFn>(quote::ToTokens::to_token_stream(func))
+            .ok()
+            .and_then(|func| crate::openapi_generator::extract_default_value_from_function(&func))
+    })
 }
 
 /// `self_ty` is the type `owner` (`impl Owner` / `impl<T> Owner<T>`).
@@ -188,29 +194,33 @@ pub(super) fn std_type_default(fn_path: &str, ty: &syn::Type) -> Option<serde_js
 
 /// `fn_name` through `module` (`self` / `super` / child segments) from the
 /// inline `chain` of the struct's file, within that file only.
-fn in_file(
-    mut chain: Vec<String>,
-    module: &[String],
-    fn_name: &str,
-    file_path: &Path,
-) -> Option<serde_json::Value> {
+fn in_file(mut chain: Vec<String>, module: &[String], fn_name: &str, file_path: &Path) -> Found {
     for segment in module {
         match segment.as_str() {
             "self" => {}
             "super" => {
-                chain.pop()?;
+                if chain.pop().is_none() {
+                    return Found::Missing;
+                }
             }
             child => chain.push(child.to_string()),
         }
     }
     if chain.is_empty() {
-        // The file's top level: the per-file cache already holds it.
-        return super::cached_default_functions(file_path)?
-            .get(fn_name)
-            .cloned();
+        // The file's top level: the per-file cache holds the unique literal
+        // defaults; any other name is classified from the parsed file.
+        if let Some(value) = super::cached_default_functions(file_path)
+            .and_then(|values| values.get(fn_name).cloned())
+        {
+            return Found::Unique(Some(value));
+        }
     }
-    let items = file_cache::get_parsed_file(file_path)?.items;
-    default_fn_value(&inline_module_items(items, &chain)?, fn_name)
+    let Some(items) = file_cache::get_parsed_file(file_path)
+        .and_then(|file| inline_module_items(file.items, &chain))
+    else {
+        return Found::Missing;
+    };
+    default_fn_value(&items, fn_name)
 }
 
 /// The function `segments` names from the struct's absolute module (the
@@ -237,12 +247,41 @@ fn in_module_tree(
 /// The literal value of the function `fn_name` among `items`. Several active
 /// items of that name (a `#[cfg(unix)]` / `#[cfg(windows)]` pair the static
 /// cfg check cannot decide) leave it unresolved: see [`unique_active`].
-fn default_fn_value(items: &[syn::Item], fn_name: &str) -> Option<serde_json::Value> {
-    let func = unique_active(items.iter().filter_map(|item| match item {
+fn default_fn_value(items: &[syn::Item], fn_name: &str) -> Found {
+    active_candidate(items.iter().filter_map(|item| match item {
         syn::Item::Fn(func) if ident_name(&func.sig.ident) == fn_name => Some(func),
         _ => None,
-    }))?;
-    crate::openapi_generator::extract_default_value_from_function(func)
+    }))
+    .map(crate::openapi_generator::extract_default_value_from_function)
+}
+
+/// What a lookup of a function name in one item list found. `Ambiguous` is a
+/// platform twin pair the static cfg check cannot decide: it resolves to
+/// nothing, and the name is not searched for elsewhere.
+enum Found<T = Option<serde_json::Value>> {
+    Unique(T),
+    Missing,
+    Ambiguous,
+}
+
+impl Found {
+    /// The literal value of a unique function (`None` when there is none).
+    fn into_value(self) -> Option<serde_json::Value> {
+        match self {
+            Self::Unique(value) => value,
+            Self::Missing | Self::Ambiguous => None,
+        }
+    }
+}
+
+impl<'a, T: HasAttrs + 'a> Found<&'a T> {
+    fn map(self, extract: impl FnOnce(&'a T) -> Option<serde_json::Value>) -> Found {
+        match self {
+            Found::Unique(item) => Found::Unique(extract(item)),
+            Found::Missing => Found::Missing,
+            Found::Ambiguous => Found::Ambiguous,
+        }
+    }
 }
 
 /// The one candidate of `candidates` that is not statically inactive, or
@@ -253,9 +292,20 @@ fn default_fn_value(items: &[syn::Item], fn_name: &str) -> Option<serde_json::Va
 pub(super) fn unique_active<'a, T: HasAttrs + 'a>(
     candidates: impl Iterator<Item = &'a T>,
 ) -> Option<&'a T> {
+    match active_candidate(candidates) {
+        Found::Unique(only) => Some(only),
+        Found::Missing | Found::Ambiguous => None,
+    }
+}
+
+/// [`unique_active`] that tells "no active candidate" from "a twin pair".
+fn active_candidate<'a, T: HasAttrs + 'a>(candidates: impl Iterator<Item = &'a T>) -> Found<&'a T> {
     let mut active = candidates.filter(|candidate| !compiled_out(candidate.attrs()));
-    let only = active.next()?;
-    active.next().is_none().then_some(only)
+    match (active.next(), active.next()) {
+        (None, _) => Found::Missing,
+        (Some(only), None) => Found::Unique(only),
+        (Some(_), Some(_)) => Found::Ambiguous,
+    }
 }
 
 /// The attributes of an item-like node, for [`unique_active`].
