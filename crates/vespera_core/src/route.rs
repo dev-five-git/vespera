@@ -202,7 +202,7 @@ pub struct RequestBody {
 ///
 /// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", remote = "Self")]
 pub struct MediaType {
     /// Schema reference or inline schema
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -234,7 +234,7 @@ pub struct MediaType {
 ///
 /// `x-*` extension keys are dropped on load (see the `extensions` module docs).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", remote = "Self")]
 pub struct Encoding {
     /// Content-Type of the part, e.g. `image/png` or `image/png, image/jpeg`
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -329,6 +329,9 @@ inline_only_serde!(Header);
 inline_only_serde!(Parameter);
 inline_only_serde!(RequestBody);
 inline_only_serde!(Response);
+inline_only_serde!(MediaType);
+inline_only_serde!(Encoding);
+inline_only_serde!(Operation);
 // Re-exported for `schema::components` (SecurityScheme is inline-only too).
 pub(crate) use inline_only_serde;
 
@@ -401,7 +404,7 @@ pub type Callback = BTreeMap<String, PathItem>;
 
 /// `OpenAPI` Operation definition
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", remote = "Self")]
 pub struct Operation {
     /// Operation ID (unique identifier)
     #[serde(skip_serializing_if = "Option::is_none")]

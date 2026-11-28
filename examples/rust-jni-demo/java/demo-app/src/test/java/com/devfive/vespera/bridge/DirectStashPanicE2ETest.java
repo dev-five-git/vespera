@@ -25,15 +25,16 @@ class DirectStashPanicE2ETest {
 
     @Test
     void panicWhileFetchingAStashedResponseAnswersAPanicWire() {
-        // 512 KiB of body, then the stream panics: far more than the 64-byte
-        // buffer holds, so the response is stashed before the panic point.
+        // 512 KiB of body, then the stream panics: far more than the 1 KiB
+        // buffer (the minimum `dispatchResumable0` accepts) holds, so the
+        // response is stashed before the panic point.
         byte[] request = VesperaBridge.encodeRequest(
                 "POST", "/diag/panic-mid-body/512", null, Map.of(), new byte[0]);
         ByteBuffer in = ByteBuffer.allocateDirect(request.length);
         in.put(request).flip();
-        ByteBuffer small = ByteBuffer.allocateDirect(64);
+        ByteBuffer small = ByteBuffer.allocateDirect(1024);
         int n = DirectStash.dispatchResumable(in, request.length, small);
-        assertTrue(n < 0, "the response overflows the 64-byte buffer: " + n);
+        assertTrue(n < 0, "the response overflows the 1 KiB buffer: " + n);
         long token = DirectStash.token(small);
         assertNotEquals(0L, token, "an overflow leaves a stash handle");
 
