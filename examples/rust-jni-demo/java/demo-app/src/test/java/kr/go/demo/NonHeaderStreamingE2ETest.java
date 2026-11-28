@@ -36,9 +36,9 @@ class NonHeaderStreamingE2ETest {
 
     /**
      * 1 KiB response chunks the {@code /diag/panic-mid-body} handler must emit
-     * before panicking so that at least one batch reaches the sink first: two
-     * streaming chunks' worth (the Rust side batches ready frames up to
-     * the effective streaming chunk size), at least 512. The chunk size is
+     * before panicking so that at least one batch reaches the sink first: at
+     * least one streaming chunk's worth (the Rust side batches ready frames up
+     * to the effective streaming chunk size), at least 512. The chunk size is
      * resolved exactly like the bridge + Rust do it:
      * <ol>
      *   <li>the {@code vespera.streaming.chunkBytes} system property (which
@@ -53,8 +53,10 @@ class NonHeaderStreamingE2ETest {
      *       means the default), else</li>
      *   <li>256 KiB;</li>
      * </ol>
-     * clamped to 4 KiB to 8 MiB. (The handler caps the count at 10 000, still
-     * past one 8 MiB chunk.)
+     * clamped to 4 KiB to 8 MiB. (The handler caps the count at
+     * {@code MAX_DRIP_CHUNKS} = 10 000 KiB, so above about 5 MiB a chunk is
+     * larger than what the handler can emit twice: the premise becomes "at
+     * least one streaming chunk, capped at 10 000 KiB".)
      */
     static int panicChunksPastOneStreamingChunk() {
         return panicChunksPastOneStreamingChunk(

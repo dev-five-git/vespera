@@ -181,8 +181,8 @@ class BidirectionalPanicStatusHttpTest {
     }
 
     /**
-     * A body panic after bytes reached the client (at least 512 KiB and two
-     * streaming chunks, well past the servlet buffer) cannot change the
+     * A body panic after bytes reached the client (at least 512 KiB and at
+     * least one streaming chunk, well past the servlet buffer) cannot change the
      * committed {@code 200}: the connection must be aborted so the client sees
      * an incomplete response, never a cleanly terminated short body.
      */

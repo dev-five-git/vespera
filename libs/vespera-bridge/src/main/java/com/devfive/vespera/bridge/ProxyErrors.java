@@ -69,6 +69,10 @@ final class ProxyErrors {
      * container aborts the connection (the client sees a truncated
      * transfer, never a cleanly terminated short body).
      *
+     * A failure writing the proxy {@code 500} (the client already went away) is
+     * attached to {@code aborted} as suppressed and {@code aborted} is thrown,
+     * so the log cause stays the stream failure, not the broken pipe.
+     *
      * @param closeConnection also send {@code Connection: close} (a detached
      *                        request-body read leaves the stream position unknown)
      */
@@ -78,7 +82,12 @@ final class ProxyErrors {
         if (panic) {
             ProxyServletResponse.markPanicked(response);
         }
-        return write(response, 500, panic ? RUST_PANIC : STREAM_ABORTED, closeConnection);
+        try {
+            return write(response, 500, panic ? RUST_PANIC : STREAM_ABORTED, closeConnection);
+        } catch (IOException writeFailure) {
+            aborted.addSuppressed(writeFailure);
+            throw aborted;
+        }
     }
 
     private static boolean write(HttpServletResponse response, int status, String message,

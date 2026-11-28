@@ -175,8 +175,10 @@ class ReactiveProxyE2ETest {
 
     /**
      * 1 KiB chunks {@code /diag/panic-mid-body} must emit so at least one
-     * coalesced batch is committed before the panic: two streaming chunks'
-     * worth, at least 512. The chunk size resolves like the bridge + Rust
+     * coalesced batch is committed before the panic: at least one streaming
+     * chunk's worth, at least 512 (the route stops at {@code MAX_DRIP_CHUNKS}
+     * = 10 000 KiB, so a chunk above about 5 MiB is not matched by two).
+     * The chunk size resolves like the bridge + Rust
      * (demo-app's {@code NonHeaderStreamingE2ETest} has the same helper):
      * the {@code vespera.streaming.chunkBytes} property (the bridge's decimal /
      * {@code 0x}-hex rule, see {@link #parseBridgeInteger}; malformed or

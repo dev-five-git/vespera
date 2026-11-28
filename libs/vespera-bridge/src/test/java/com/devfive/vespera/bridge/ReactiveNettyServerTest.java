@@ -136,6 +136,8 @@ class ReactiveNettyServerTest {
             Thread.sleep(5);
         }
         assertTrue(nativeFuture.isCancelled(), "disconnect cancels the native future");
+        // A fresh budget: a late cancel must not leave the events wait no time.
+        deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
         while (events.isEmpty() && System.nanoTime() < deadline) {
             Thread.sleep(5);
         }
