@@ -144,9 +144,10 @@ impl Stash {
     /// entries go to `evicted` first; then a fresh stash is refused (the
     /// response comes back with the [`Refusal`]) when it would exceed
     /// `limits`, counting the checked-out entries too.  A re-put over a token
-    /// always stores: the fetch re-stashing it already counted its space as
-    /// checked out, so the stash cannot overshoot the ceilings.  A closed
-    /// stash refuses everything.
+    /// always stores and is not re-checked: the fetch re-stashing it may hold
+    /// more bytes than it checked out (its prefix grows by up to one caller
+    /// buffer plus one body frame), so the byte ceiling is soft by that much
+    /// per concurrent re-put.  A closed stash refuses everything.
     fn put(
         &mut self,
         token: Option<u64>,
