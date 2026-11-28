@@ -15,13 +15,6 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
-    # libsqlite3-sys 0.37 (bundled SQLite < 3.54) reaches the graph ONLY via
-    # examples/axum-example -> sea-orm 2 -> sqlx 0.9 -> sqlx-sqlite, which
-    # pins 0.37 (no compatible 0.39 exists for sqlx 0.9). The example is
-    # unpublished (publish = false) and never opens attacker-supplied
-    # database/WAL files. No published vespera crate depends on SQLite.
-    # Drop this once sqlx ships a release on libsqlite3-sys >= 0.39.
-    { id = "RUSTSEC-2026-0459", reason = "example-only (axum-example via sqlx-sqlite); no published crate links SQLite" },
     # chrono / chrono-tz were flagged unmaintained (informational, no known
     # vulnerability). chrono is part of vespera's public API (`vespera::chrono`
     # re-export, SeaORM `DateTimeWithTimeZone` conversion, croner's chrono
