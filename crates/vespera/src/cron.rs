@@ -188,6 +188,9 @@ pub fn start_once(guard: &'static Once, jobs: impl IntoIterator<Item = CronJob>)
     start_once_with(guard, jobs, start_jobs);
 }
 
+/// Serialises [`start_once`] calls (see [`start_once_with`]).
+static START_ONCE_LOCK: Mutex<()> = Mutex::new(());
+
 /// [`start_once`] with the start step injected.  Serialised by a lock so two
 /// calls cannot both see an unset guard and start the jobs twice; the guard is
 /// marked only when `start` reports success.
@@ -196,7 +199,6 @@ fn start_once_with(
     jobs: impl IntoIterator<Item = CronJob>,
     start: impl FnOnce(Vec<CronJob>) -> bool,
 ) {
-    static START_ONCE_LOCK: Mutex<()> = Mutex::new(());
     let _serial = START_ONCE_LOCK
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
