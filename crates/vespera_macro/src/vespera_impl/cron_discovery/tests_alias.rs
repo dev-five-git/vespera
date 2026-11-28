@@ -145,3 +145,50 @@ fn a_path_of_three_segments_is_never_the_cron_macro() {
         .collect();
     assert!(!imports.is_cron_segments(&segments));
 }
+
+/// `use crate::*;` brings the crate ROOT's imports into a module at any depth,
+/// not the enclosing module's (round-43 R43-MR5-M1). `use super::*;` keeps the
+/// enclosing module's: the root's alias does not reach a grandchild through
+/// its parent that does not import it.
+#[rstest]
+#[case::crate_glob_reaches_the_root_through_a_module(
+    r#"use vespera::cron as job; mod a { mod b { use crate::*; #[job("1 * * * * *")] pub async fn tick() {} } }"#,
+    &[("a::b", "tick", "1 * * * * *")]
+)]
+#[case::super_glob_does_not_reach_past_its_parent(
+    r#"use vespera::cron as job; mod a { mod b { use super::*; #[job("1 * * * * *")] pub async fn tick() {} } }"#,
+    &[]
+)]
+#[case::crate_glob_reaches_the_root_crate_alias(
+    r#"use vespera as v; mod a { mod b { use crate::*; #[v::cron("1 * * * * *")] pub async fn tick() {} } }"#,
+    &[("a::b", "tick", "1 * * * * *")]
+)]
+#[case::crate_glob_keeps_the_root_foreign_cron(
+    r#"use other::cron; mod a { mod b { use crate::*; #[cron("1 * * * * *")] pub async fn tick() {} } }"#,
+    &[]
+)]
+fn crate_glob_inherits_the_crate_root_imports(
+    #[case] source: &str,
+    #[case] expected_jobs: &[(&str, &str, &str)],
+) {
+    let krate = crate_with(&[("lib.rs", source)]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(placed(&jobs), expected(expected_jobs));
+}
+
+/// The R43-MR5-M1 scenario across a file module: `lib.rs` binds the alias and
+/// declares `mod a;`, whose inline `mod b` globs the crate root.
+#[test]
+fn crate_glob_in_a_file_module_reaches_the_root_alias() {
+    let krate = crate_with(&[
+        ("lib.rs", "use vespera::cron as job;\nmod a;\n"),
+        (
+            "a.rs",
+            "pub mod b { use crate::*; #[job(\"1 * * * * *\")] pub async fn tick() {} }\n",
+        ),
+    ]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(placed(&jobs), expected(&[("a::b", "tick", "1 * * * * *")]));
+}

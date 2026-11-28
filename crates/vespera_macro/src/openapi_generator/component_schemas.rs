@@ -22,8 +22,10 @@ use crate::{
 /// `Deserialize_repr` derive, a `HashSet` / `BTreeSet` / `Duration` /
 /// `Decimal` type (`request_view::type_view_differs`), an `Option` field
 /// (written as `null`, but optional on input) or an externally tagged enum
-/// mixing unit and data variants (`{"Unit": null}` is also read), so
-/// definitions mentioning none of them (and no `enum`) are not even parsed.
+/// mixing unit and data variants (`{"Unit": null}` is also read). When no
+/// documented definition mentions one of them (and none is an `enum`), none is
+/// parsed; otherwise every documented definition is, and only those that
+/// differ get a view name.
 pub(super) fn input_names(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<&str>,
@@ -100,8 +102,9 @@ pub(super) fn without_identical_inputs(
 /// The request-view components the generator built (`generated`, see
 /// [`generated_request_views`]) that no request body reaches are dropped: a
 /// type that only ever appears in responses keeps a single component. A user
-/// component is never in `generated`, so a `#[schema(name = "Pet.Input")]`
-/// response-only type stays documented.
+/// `.Input` component name is rejected before generation
+/// (`openapi_generator.rs`), so every `generated` name is the generator's own
+/// and a user component never reaches this pruning.
 pub(super) fn prune_unreferenced_inputs(
     schemas: &mut BTreeMap<String, vespera_core::schema::Schema>,
     paths: &BTreeMap<String, vespera_core::route::PathItem>,

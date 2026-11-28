@@ -519,7 +519,7 @@ pub struct FnDefinition {
     name: String,
     /// The `#[route(<method>)]` method, `get` for a bare `#[route]`.
     method: String,
-    /// `quote!(#sig)` of the signature: the text `StoredRouteInfo::fn_sig_str` keeps.
+    /// `quote!(#sig)` of the alias-expanded signature: the text `StoredRouteInfo::fn_sig_str` keeps.
     pub(super) signature: String,
     test_only: bool,
 }
@@ -572,7 +572,10 @@ pub fn fn_definitions(file: &Path) -> Vec<FnDefinition> {
                         .iter()
                         .filter_map(|item| match item {
                             Item::Fn(function) => {
-                                let sig = &function.sig;
+                                // The storage form of the signature (alias-expanded, see
+                                // `stored_signature`), so both sides of the match agree.
+                                let sig =
+                                    crate::route_impl::stored_signature(&function.sig, Some(file));
                                 Some(FnDefinition {
                                     name: sig.ident.to_string().trim_start_matches("r#").to_owned(),
                                     method: route_method(&function.attrs),
@@ -608,8 +611,9 @@ pub fn route_test_only(defs: &[FnDefinition], name: &str, method: &str, signatur
         .into_iter()
         .filter(|def| def.method.eq_ignore_ascii_case(method))
         .collect();
-    // The stored signature is alias-expanded and may differ from the source
-    // text, so the signature only decides between several same-method twins.
+    // Both sides hold the alias-expanded signature (`fn_definitions` and
+    // `stored_signature`), so the signature only decides between several
+    // same-method twins.
     let matching: Vec<&FnDefinition> = if same_method.len() > 1 {
         same_method
             .into_iter()
@@ -946,3 +950,6 @@ mod tests_route_method;
 
 #[cfg(test)]
 mod tests_cfg_twin;
+
+#[cfg(test)]
+mod tests_alias_twin;

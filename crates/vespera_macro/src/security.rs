@@ -50,13 +50,14 @@ pub fn parse_security_requirements(
 /// One `"scheme"` or `("scheme", ["scope", ...])` entry.
 fn parse_entry(expr: &syn::Expr, owner: &str) -> syn::Result<(String, Vec<String>)> {
     if let Some(name) = string_lit(expr) {
-        return Ok((name, Vec::new()));
+        return Ok((scheme_name(expr, name, owner)?, Vec::new()));
     }
     if let syn::Expr::Tuple(tuple) = expr
         && tuple.elems.len() == 2
         && let Some(name) = string_lit(&tuple.elems[0])
         && let syn::Expr::Array(scopes) = &tuple.elems[1]
     {
+        let name = scheme_name(&tuple.elems[0], name, owner)?;
         let scopes = scopes
             .elems
             .iter()
@@ -86,6 +87,18 @@ fn parse_entry(expr: &syn::Expr, owner: &str) -> syn::Result<(String, Vec<String
              (`[\"apiKey\", (\"oauth2\", [\"read:users\"])]`)"
         ),
     ))
+}
+
+/// A scheme name must not be empty: `""` names no declared scheme, and the
+/// document would carry `{"": []}`.
+fn scheme_name(expr: &syn::Expr, name: String, owner: &str) -> syn::Result<String> {
+    if name.is_empty() {
+        return Err(syn::Error::new_spanned(
+            expr,
+            format!("{owner} scheme names must not be empty"),
+        ));
+    }
+    Ok(name)
 }
 
 fn string_lit(expr: &syn::Expr) -> Option<String> {
