@@ -131,3 +131,17 @@ fn inherited_cron_alias_reaches_a_file_module(#[case] declaration: &str, #[case]
     let jobs = discover(&[], Some(&src), None);
     assert_eq!(placed(&jobs), expected(&[("jobs", "tick", "1 * * * * *")]));
 }
+
+/// A path of three or more segments is never vespera's `cron`, whatever the
+/// imports bind (the scan itself only passes paths of at most two segments
+/// on, see `cron_candidates`; this pins the wildcard arm directly).
+#[test]
+fn a_path_of_three_segments_is_never_the_cron_macro() {
+    use super::imports::CronImports;
+    let imports = CronImports::default();
+    let segments: Vec<String> = ["vespera", "inner", "cron"]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(!imports.is_cron_segments(&segments));
+}
