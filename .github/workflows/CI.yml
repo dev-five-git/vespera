@@ -53,11 +53,18 @@ jobs:
       - name: cargo clippy (all targets, all features)
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: cargo clippy (core crates, no default features)
-        # Per package, not --workspace: the examples' feature unification
-        # (rust-jni-demo jni+ffi, axum-example cron, testkit tracing) turns
-        # the features back on, so a workspace run never lints these crates
-        # with defaults off.
-        run: cargo clippy -p vespera -p vespera_core -p vespera_macro -p vespera_inprocess -p vespera_jni --no-default-features -- -D warnings
+        # One invocation per package, not one with several -p: cargo unifies
+        # features across the -p packages of a single run (vespera_jni turns
+        # on vespera_inprocess's connect-info + runtime), so a combined run
+        # would not lint vespera_inprocess with defaults off. Not --workspace
+        # either: the examples' feature unification (rust-jni-demo jni+ffi,
+        # axum-example cron, testkit tracing) turns the features back on.
+        run: |
+          cargo clippy -p vespera --no-default-features -- -D warnings
+          cargo clippy -p vespera_core --no-default-features -- -D warnings
+          cargo clippy -p vespera_macro --no-default-features -- -D warnings
+          cargo clippy -p vespera_inprocess --no-default-features -- -D warnings
+          cargo clippy -p vespera_jni --no-default-features -- -D warnings
       - name: cargo doc (deny rustdoc warnings)
         # Broken / private intra-doc links and ambiguous paths fail the build
         # here instead of surfacing only as docs.rs warnings after a release.
