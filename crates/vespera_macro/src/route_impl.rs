@@ -302,7 +302,10 @@ fn typed_response_entry(elem: &syn::Expr) -> syn::Result<(u16, String)> {
 /// visible from `source_file` / the crate's `src/` (see
 /// [`crate::parser::expand_return_type_alias`]). The source is only read when
 /// the return type could name an alias.
-fn stored_signature(sig: &syn::Signature, source_file: Option<&std::path::Path>) -> syn::Signature {
+pub fn stored_signature(
+    sig: &syn::Signature,
+    source_file: Option<&std::path::Path>,
+) -> syn::Signature {
     let mut sig = sig.clone();
     if let Some(file) = source_file.filter(|_| crate::parser::needs_alias_expansion(&sig)) {
         use crate::schema_macro::file_cache;

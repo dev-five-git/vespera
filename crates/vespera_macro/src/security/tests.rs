@@ -52,6 +52,21 @@ fn empty_scope_name_is_rejected_at_the_route_security() {
     );
 }
 
+/// An empty scheme name, bare or with scopes, is rejected like an empty scope
+/// (R43-MR5-L1): it would document `{"": []}` for no declared scheme.
+#[rstest]
+#[case::bare("bare", syn::parse_quote!([""]))]
+#[case::with_scopes("with_scopes", syn::parse_quote!([("", ["read:users"])]))]
+#[case::in_an_and_group("in_an_and_group", syn::parse_quote!([["", "apiKey"]]))]
+fn empty_scheme_name_is_rejected(#[case] case: &str, #[case] arr: syn::ExprArray) {
+    let error = parse(&arr).expect_err("empty scheme name must be rejected");
+    assert_eq!(
+        error.to_string(),
+        "#[route] `security` scheme names must not be empty",
+        "{case}"
+    );
+}
+
 #[test]
 fn empty_scope_name_in_an_and_group_is_rejected() {
     let arr: syn::ExprArray = syn::parse_quote!([["apiKey", ("oauth2", ["read", ""])]]);

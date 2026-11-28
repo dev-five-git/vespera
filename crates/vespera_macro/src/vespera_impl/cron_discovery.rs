@@ -420,25 +420,32 @@ struct Scope<'a> {
     inline: &'a str,
     /// The `#[cfg]` predicates of the enclosing modules (all must hold).
     gate: CfgGate,
-    /// The enclosing module's bare `cron` is another crate's (see
-    /// [`CronImports::foreign`]); `false` at the crate root.
-    inherited_foreign: bool,
-    /// The enclosing module's effective imports: the aliases a `use super::*`
-    /// / `use crate::*` glob of this module can bring in.
-    inherited_imports: &'a CronImports,
+    /// The enclosing module's effective `use` state: what its `use super::*;`
+    /// glob brings in.
+    parent: Inherited<'a>,
+    /// The crate root's effective `use` state: what its `use crate::*;` glob
+    /// brings in (the root itself sees the empty default).
+    root: Inherited<'a>,
+}
+
+/// A module's effective `use` state, as a glob of a child module inherits it:
+/// whether its bare `cron` is another crate's (see [`CronImports::foreign`]),
+/// and the imports in effect (see [`CronImports::inheriting`]).
+#[derive(Clone, Copy)]
+struct Inherited<'a> {
+    foreign: bool,
+    imports: &'a CronImports,
 }
 
 impl ModuleTree {
     fn from_root(root: &Path, src_dir: &Path) -> Self {
         let mut tree = Self::default();
-        tree.walk(
-            root,
-            src_dir,
-            "",
-            &CfgGate::default(),
-            false,
-            &CronImports::default(),
-        );
+        let empty = CronImports::default();
+        let none = Inherited {
+            foreign: false,
+            imports: &empty,
+        };
+        tree.walk(root, src_dir, "", &CfgGate::default(), none, none);
         tree
     }
 
@@ -451,8 +458,8 @@ impl ModuleTree {
         mod_dir: &Path,
         module_path: &str,
         gate: &CfgGate,
-        inherited_foreign: bool,
-        inherited_imports: &CronImports,
+        parent: Inherited<'_>,
+        root: Inherited<'_>,
     ) {
         let display = canonical_display(file);
         // A module cycle (`#[path = "lib.rs"] mod again;`, a symlinked
@@ -471,8 +478,8 @@ impl ModuleTree {
                 file: &display,
                 inline: "",
                 gate: gate.inside(&summary.module.gate),
-                inherited_foreign,
-                inherited_imports,
+                parent,
+                root,
             };
             self.visit(&summary.module, &scope);
         }
@@ -480,8 +487,23 @@ impl ModuleTree {
     }
 
     fn visit(&mut self, module: &ModuleSummary, scope: &Scope<'_>) {
-        let foreign = module.imports.foreign(scope.inherited_foreign);
-        let imports = module.imports.inheriting(scope.inherited_imports);
+        let foreign = module
+            .imports
+            .foreign(scope.parent.foreign, scope.root.foreign);
+        let imports = module
+            .imports
+            .inheriting(scope.parent.imports, scope.root.imports);
+        let own = Inherited {
+            foreign,
+            imports: &imports,
+        };
+        // The crate root is the module with an empty path: its own state is
+        // what every `use crate::*;` below it inherits.
+        let root = if scope.module_path.is_empty() {
+            own
+        } else {
+            scope.root
+        };
         for item in &module.items {
             match item {
                 ItemSummary::Mod {
@@ -503,8 +525,8 @@ impl ModuleTree {
                             file: scope.file,
                             inline: &inline,
                             gate,
-                            inherited_foreign: foreign,
-                            inherited_imports: &imports,
+                            parent: own,
+                            root,
                         };
                         self.visit(inner, &child);
                     } else if let Some(path) = path {
@@ -521,7 +543,7 @@ impl ModuleTree {
                         let child = fold_parent_dirs(&base.join(path));
                         if child.is_file() {
                             let dir = child.parent().unwrap_or(base).to_path_buf();
-                            self.walk(&child, &dir, &child_path, &gate, foreign, &imports);
+                            self.walk(&child, &dir, &child_path, &gate, own, root);
                         }
                     } else {
                         let child_dir = scope.mod_dir.join(name);
@@ -532,7 +554,7 @@ impl ModuleTree {
                         .into_iter()
                         .find(|candidate| candidate.is_file())
                         {
-                            self.walk(&child, &child_dir, &child_path, &gate, foreign, &imports);
+                            self.walk(&child, &child_dir, &child_path, &gate, own, root);
                         }
                     }
                 }

@@ -264,7 +264,7 @@ fn declares_workspace(cargo_toml: &str) -> bool {
         let line = code.split('#').next().unwrap_or_default().trim();
         if let Some(header) = line.strip_prefix('[') {
             let name = header.split(']').next().unwrap_or_default();
-            if name.split('.').next().unwrap_or_default().trim() == "workspace" {
+            if top_level_key_is_workspace(name) {
                 return true;
             }
             top_level = false;
@@ -516,6 +516,8 @@ mod tests {
     #[case::table("[workspace]\nmembers = []", true)]
     #[case::spaced_table("[ workspace ]", true)]
     #[case::sub_table_only("[workspace.package]\nversion = \"1\"", true)]
+    #[case::quoted_table("[\"workspace\"]\nmembers = []", true)]
+    #[case::quoted_dotted_table_is_one_key("[\"workspace.x\"]", false)]
     #[case::trailing_comment("[workspace] # root", true)]
     #[case::inline_key("workspace = { members = [] }\n[package]", true)]
     #[case::dotted_key("workspace.members = []\n[package]", true)]

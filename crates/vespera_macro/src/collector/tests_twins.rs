@@ -44,8 +44,9 @@ fn ungated_twin_helper_file_does_not_fail_collection() {
     assert_eq!(modules, ["routes::users"]);
 }
 
-/// The same helper pair declared with the alias first mounts nothing under
-/// the alias: the ungated twins keep the first declared name (round-37 MR0-M1).
+/// The same helper pair declared with the alias first: the ungated twins keep
+/// the first declared name, so the alias (declared first) is the call path
+/// (round-37 MR0-M1).
 #[test]
 fn ungated_twin_helper_file_keeps_the_first_declared_name() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");

@@ -15,9 +15,12 @@ pub(super) struct CronImports {
     explicit_vespera: bool,
     /// `use other::*;`.
     foreign_glob: bool,
-    /// `use super::*;` / `use crate::*;`: the names of the enclosing module
-    /// (its own `cron` import) reach this module through the glob.
-    inheriting_glob: bool,
+    /// `use super::*;`: the names of the enclosing module (its own `cron`
+    /// import) reach this module through the glob.
+    super_glob: bool,
+    /// `use crate::*;`: the names of the crate root reach this module through
+    /// the glob (not those of the enclosing module).
+    crate_glob: bool,
     /// Every name a `use` item of this module binds (`use other::job;`,
     /// `use vespera::cron as job;`): it shadows an inherited alias of the same
     /// name, since an explicit import beats a glob.
@@ -34,32 +37,35 @@ impl CronImports {
     /// An explicit `cron` import shadows a glob, so it decides: vespera's when
     /// it is rooted at `vespera`, `crate`, `self` or `super`, whatever the
     /// globs bring in. Without one, a foreign glob makes the bare form foreign,
-    /// and so does an inheriting glob when the enclosing module's bare `cron`
-    /// is foreign (`inherited`). `crate::*` is approximated by the enclosing
-    /// module's decision.
-    pub(super) fn foreign(&self, inherited: bool) -> bool {
+    /// and so does a `use super::*;` glob when the enclosing module's bare
+    /// `cron` is foreign (`parent`), or a `use crate::*;` glob when the crate
+    /// root's is (`root`).
+    pub(super) fn foreign(&self, parent: bool, root: bool) -> bool {
         self.explicit_foreign
             || (!self.explicit_vespera
-                && (self.foreign_glob || (self.inheriting_glob && inherited)))
+                && (self.foreign_glob || (self.super_glob && parent) || (self.crate_glob && root)))
     }
 
     /// The imports in effect in this module: its own, plus the aliases its
-    /// `use super::*` / `use crate::*` glob brings from `parent` (the
-    /// enclosing module's effective imports), except a name this module's own
-    /// `use` items bind. A module without such a glob sees only its own.
-    pub(super) fn inheriting(&self, parent: &Self) -> Self {
+    /// `use super::*;` glob brings from `parent` (the enclosing module's
+    /// effective imports) and its `use crate::*;` glob brings from `root` (the
+    /// crate root's effective imports), except a name this module's own `use`
+    /// items bind. A module without such a glob sees only its own.
+    pub(super) fn inheriting(&self, parent: &Self, root: &Self) -> Self {
         let mut effective = self.clone();
-        if self.inheriting_glob {
-            extend_unbound(
-                &mut effective.cron_aliases,
-                &parent.cron_aliases,
-                &self.bound,
-            );
-            extend_unbound(
-                &mut effective.crate_aliases,
-                &parent.crate_aliases,
-                &self.bound,
-            );
+        for (glob, source) in [(self.super_glob, parent), (self.crate_glob, root)] {
+            if glob {
+                extend_unbound(
+                    &mut effective.cron_aliases,
+                    &source.cron_aliases,
+                    &self.bound,
+                );
+                extend_unbound(
+                    &mut effective.crate_aliases,
+                    &source.crate_aliases,
+                    &self.bound,
+                );
+            }
         }
         effective
     }
@@ -141,11 +147,12 @@ pub(super) fn cron_imports(items: &[syn::Item]) -> CronImports {
             }
             // A glob may bring in another crate's `cron`; only vespera's (or
             // this crate's own) globs leave the bare form vespera's. A
-            // `super` / `crate` glob also brings in the enclosing names.
+            // `super` / `crate` glob also brings in the names of the enclosing
+            // module / of the crate root.
             syn::UseTree::Glob(_) => {
                 out.foreign_glob |= foreign;
-                out.inheriting_glob |=
-                    root.is_some_and(|root| matches!(root.to_string().as_str(), "super" | "crate"));
+                out.super_glob |= root.is_some_and(|root| root == "super");
+                out.crate_glob |= root.is_some_and(|root| root == "crate");
             }
             _ => {}
         }
