@@ -43,39 +43,32 @@ fn alias_twins_differing_in_the_alias_argument_are_told_apart() {
     let stored_test = stored_form(&file, 0);
     let stored_prod = stored_form(&file, 1);
     assert_ne!(stored_test, stored_prod);
-    assert!(route_test_only(&defs, "list", "get", &stored_test));
-    assert!(!route_test_only(&defs, "list", "get", &stored_prod));
+    assert!(route_test_only(&defs, "list", "get", &stored_test, false));
+    assert!(!route_test_only(&defs, "list", "get", &stored_prod, false));
 }
 
 /// Identical-signature alias twins (`#[cfg(test)]` and `#[cfg(not(test))]` of one
 /// fn returning `ApiResult<Vec<User>>`): the stored entry is the twin of the
-/// build that stored it, so the verdict follows the harness build (the twin
-/// rule), not a signature mismatch that empties the match.
+/// build that stored it, so the verdict is that entry's own `cfg` (the twin
+/// rule), not a signature mismatch that empties the match. No argv is read.
 #[test]
 fn identical_alias_twins_follow_the_build_that_stored_them() {
     let krate = crate_with(&[(
         "alias_same.rs",
-        "pub type ApiResult<T> = Result<Json<T>, AppError>;\n\
-         #[cfg(test)]\n#[route(get, path = \"/stub\")]\npub async fn list() -> ApiResult<Vec<User>> { todo!() }\n\
-         #[cfg(not(test))]\n#[route(get)]\npub async fn list() -> ApiResult<Vec<User>> { todo!() }\n",
+        "pub type ApiResult<T> = Result<Json<T>, AppError>;
+         #[cfg(test)]
+#[route(get, path = \"/stub\")]
+pub async fn list() -> ApiResult<Vec<User>> { todo!() }
+         #[cfg(not(test))]
+#[route(get)]
+pub async fn list() -> ApiResult<Vec<User>> { todo!() }
+",
     )]);
     let file = krate.path().join("src").join("alias_same.rs");
     let defs = fn_definitions(&file);
     assert_eq!(defs.len(), 2);
     let stored = stored_form(&file, 0);
     assert_eq!(stored, stored_form(&file, 1));
-    {
-        let _args = crate::env_access::test_env::set_var(
-            crate::env_access::COMPILER_ARGS_KEY,
-            "rustc\n--test",
-        );
-        assert!(route_test_only(&defs, "list", "get", &stored));
-    }
-    {
-        let _args = crate::env_access::test_env::set_var(
-            crate::env_access::COMPILER_ARGS_KEY,
-            "rustc\n--crate-name\ndemo",
-        );
-        assert!(!route_test_only(&defs, "list", "get", &stored));
-    }
+    assert!(route_test_only(&defs, "list", "get", &stored, true));
+    assert!(!route_test_only(&defs, "list", "get", &stored, false));
 }

@@ -192,3 +192,110 @@ fn crate_glob_in_a_file_module_reaches_the_root_alias() {
     let jobs = discover(&[], Some(&src), None);
     assert_eq!(placed(&jobs), expected(&[("a::b", "tick", "1 * * * * *")]));
 }
+
+/// A child module that imports the parent's cron alias by name (`use
+/// super::job;`, `use super::job as j;`, `use crate::job;`) binds it, so its
+/// `#[job]` is scheduled (round-45 R45-MR5-M1), inline or in a file.
+#[rstest]
+#[case::inline_by_name(
+    r#"use vespera::cron as job; mod jobs { use super::job; #[job("1 * * * * *")] pub async fn tick() {} }"#,
+    &[("jobs", "tick", "1 * * * * *")]
+)]
+#[case::inline_renamed(
+    r#"use vespera::cron as job; mod jobs { use super::job as j; #[j("1 * * * * *")] pub async fn tick() {} }"#,
+    &[("jobs", "tick", "1 * * * * *")]
+)]
+#[case::inline_from_the_crate_root(
+    r#"use vespera::cron as job; mod jobs { use crate::job; #[job("1 * * * * *")] pub async fn tick() {} }"#,
+    &[("jobs", "tick", "1 * * * * *")]
+)]
+#[case::foreign_alias_is_not_inherited_by_name(
+    r#"use other::cron as job; mod jobs { use super::job; #[job("1 * * * * *")] pub async fn tick() {} }"#,
+    &[]
+)]
+#[case::unknown_name_is_not_an_alias(
+    r#"use vespera::cron; mod jobs { use super::missing; #[missing("1 * * * * *")] pub async fn tick() {} }"#,
+    &[]
+)]
+fn parent_alias_imported_by_name_reaches_the_child(
+    #[case] source: &str,
+    #[case] expected_jobs: &[(&str, &str, &str)],
+) {
+    let krate = crate_with(&[("lib.rs", source)]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(placed(&jobs), expected(expected_jobs));
+}
+
+/// The same by-name import from a file module (`mod jobs;`).
+#[rstest]
+#[case::by_name("use super::job;", "job")]
+#[case::renamed("use super::job as j;", "j")]
+#[case::from_the_crate_root("use crate::job;", "job")]
+fn parent_alias_imported_by_name_reaches_a_file_module(#[case] import: &str, #[case] attr: &str) {
+    let krate = crate_with(&[
+        ("lib.rs", "use vespera::cron as job;\nmod jobs;\n"),
+        (
+            "jobs.rs",
+            &format!("{import}\n#[{attr}(\"1 * * * * *\")]\npub async fn tick() {{}}\n"),
+        ),
+    ]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(placed(&jobs), expected(&[("jobs", "tick", "1 * * * * *")]));
+}
+
+/// `use super::cron;` / `use crate::cron;` bind the parent's (or the crate
+/// root's) bare `cron`, so the child's bare `#[cron]` is the same macro: a
+/// foreign one is not vespera's (round-45 R45-MR5-L1), a vespera one is.
+#[rstest]
+#[case::foreign_parent_cron(
+    r#"use other::cron; mod jobs { use super::cron; #[cron("1 * * * * *")] pub async fn tick() {} }"#,
+    &[]
+)]
+#[case::foreign_parent_cron_renamed(
+    r#"use other::cron; mod jobs { use super::cron as job; #[job("1 * * * * *")] pub async fn tick() {} }"#,
+    &[]
+)]
+#[case::vespera_parent_cron(
+    r#"use vespera::cron; mod jobs { use super::cron; #[cron("1 * * * * *")] pub async fn tick() {} }"#,
+    &[("jobs", "tick", "1 * * * * *")]
+)]
+#[case::vespera_parent_cron_renamed_to_itself(
+    r#"use vespera::cron; mod jobs { use super::cron as cron; #[cron("1 * * * * *")] pub async fn tick() {} }"#,
+    &[("jobs", "tick", "1 * * * * *")]
+)]
+#[case::vespera_parent_cron_renamed(
+    r#"use vespera::cron; mod jobs { use super::cron as job; #[job("1 * * * * *")] pub async fn tick() {} }"#,
+    &[("jobs", "tick", "1 * * * * *")]
+)]
+#[case::foreign_crate_root_cron(
+    r#"use other::cron; mod jobs { use crate::cron; #[cron("1 * * * * *")] pub async fn tick() {} }"#,
+    &[]
+)]
+#[case::vespera_crate_root_cron(
+    r#"use vespera::cron; mod jobs { use crate::cron; #[cron("1 * * * * *")] pub async fn tick() {} }"#,
+    &[("jobs", "tick", "1 * * * * *")]
+)]
+fn inherited_bare_cron_keeps_the_parents_foreign_state(
+    #[case] source: &str,
+    #[case] expected_jobs: &[(&str, &str, &str)],
+) {
+    let krate = crate_with(&[("lib.rs", source)]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(placed(&jobs), expected(expected_jobs));
+}
+
+/// A crate alias bound in the parent (`use vespera as v;`) reaches a child that
+/// imports it by name (`use super::v;`), so the child's `#[v::cron]` is a job.
+#[test]
+fn parent_crate_alias_imported_by_name_reaches_the_child() {
+    let krate = crate_with(&[(
+        "lib.rs",
+        r#"use vespera as v; mod jobs { use super::v; #[v::cron("1 * * * * *")] pub async fn tick() {} }"#,
+    )]);
+    let src = krate.path().join("src");
+    let jobs = discover(&[], Some(&src), None);
+    assert_eq!(placed(&jobs), expected(&[("jobs", "tick", "1 * * * * *")]));
+}

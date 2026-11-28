@@ -130,6 +130,7 @@ mod tests {
 
     fn stored_route(fn_name: &str, file_path: Option<&str>, tags: &[&str]) -> StoredRouteInfo {
         StoredRouteInfo {
+            own_test_only: false,
             fn_name: fn_name.to_string(),
             method: Some("get".to_string()),
             custom_path: None,
@@ -207,6 +208,7 @@ mod tests {
         });
 
         let storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "get_users".to_string(),
             method: Some("get".to_string()),
             custom_path: None,
@@ -260,6 +262,7 @@ mod tests {
         });
 
         let storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "create_user".to_string(),
             method: Some("post".to_string()),
             custom_path: None,
@@ -312,6 +315,7 @@ mod tests {
         // Two StoredRouteInfo with same fn_name — ambiguous
         let storage = vec![
             StoredRouteInfo {
+                own_test_only: false,
                 fn_name: "handler".to_string(),
                 method: Some("get".to_string()),
                 custom_path: None,
@@ -332,6 +336,7 @@ mod tests {
                 file_path: None,
             },
             StoredRouteInfo {
+                own_test_only: false,
                 fn_name: "handler".to_string(),
                 method: Some("post".to_string()),
                 custom_path: None,
@@ -526,6 +531,7 @@ mod tests {
         });
 
         let storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "get_users".to_string(),
             method: Some("get".to_string()),
             custom_path: None,
@@ -581,6 +587,7 @@ mod tests {
 
         // StoredRouteInfo with only error_status (tags/description are None)
         let storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "get_users".to_string(),
             method: Some("get".to_string()),
             custom_path: None,

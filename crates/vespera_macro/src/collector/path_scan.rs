@@ -141,6 +141,7 @@ mod tests {
 
         let relative_stored_path = format!("../../target/{unique}/users.rs");
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "get_users".to_string(),
             method: None,
             custom_path: None,
@@ -187,6 +188,7 @@ mod tests {
         let file_path = create_temp_file(&temp_dir, "items.rs", "// placeholder\n");
 
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "list_items".to_string(),
             method: None, // bare `#[route]` / `#[route(path = ...)]`
             custom_path: None,
@@ -238,6 +240,7 @@ mod tests {
 
         // Create StoredRouteInfo entries that match this file
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "get_users".to_string(),
             method: Some("get".to_string()),
             custom_path: None,
@@ -297,6 +300,7 @@ mod tests {
         let file_path_str = file_path.display().to_string();
 
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "get_user".to_string(),
             method: Some("get".to_string()),
             custom_path: Some("/{id}".to_string()),
@@ -346,6 +350,7 @@ mod tests {
         let file_path_str = file_path.display().to_string();
 
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "list_users".to_string(),
             method: Some("get".to_string()),
             custom_path: None,
@@ -390,6 +395,7 @@ mod tests {
         // The collector fast path must pass it through verbatim WITHOUT
         // re-parsing `fn_sig_str`.
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "get_items".to_string(),
             method: Some("get".to_string()),
             custom_path: None,
@@ -423,6 +429,7 @@ mod tests {
         // A storage entry with no description stays None — the fast path
         // does NOT re-extract from fn_sig_str (expansion already did).
         let route_storage_none = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "get_items".to_string(),
             method: Some("get".to_string()),
             custom_path: None,

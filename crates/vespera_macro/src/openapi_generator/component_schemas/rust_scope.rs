@@ -26,8 +26,10 @@ pub(super) fn crate_path(source_identity: &str) -> Option<(Vec<String>, String)>
     let line = position.split_once(':')?.0.parse().ok()?;
     let file = Path::new(file);
     let mut modules = file_modules(file)?;
-    let inline = get_inline_modules(file, line).unwrap_or_default();
-    modules.extend(inline);
+    // An unreadable or unparseable file has no inline-module chain to name, so
+    // the type is not placed under a module it may not be in: it falls back to
+    // the bare ident (`None`), like any identity this function cannot place.
+    modules.extend(get_inline_modules(file, line)?);
     Some((modules, ident.trim_start_matches("r#").to_owned()))
 }
 
@@ -415,7 +417,20 @@ mod tests {
         let models = dir.path().join("models.rs");
         fs::write(&models, "mod b {\n    struct Foo;\n}\nstruct Foo;\n").unwrap();
         let lib = dir.path().join("lib.rs");
+        // The same shape, but unparseable: its `mod b` cannot be read, so the
+        // struct must not be claimed under `crate::broken` (`None`).
+        let broken = dir.path().join("broken.rs");
+        fs::write(
+            &broken,
+            "mod b {
+    struct Foo;
+}
+fn broken( {
+",
+        )
+        .unwrap();
         let identity = |file: &Path, line: usize| format!("{}::Foo@{line}:11", file.display());
+        assert_eq!(crate_path(&identity(&broken, 2)), None);
         assert_eq!(
             crate_path(&identity(&models, 2)),
             Some((vec!["models".to_owned(), "b".to_owned()], "Foo".to_owned()))

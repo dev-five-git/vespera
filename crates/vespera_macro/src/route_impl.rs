@@ -101,6 +101,13 @@ pub struct StoredRouteInfo {
     /// other, and lets the collector reject an inline-module handler without
     /// re-parsing the file.
     pub inline_module: Option<String>,
+    /// Whether the handler's OWN attributes carry a test-only `#[cfg(..)]`
+    /// (`cfg(test)`, `all(test, ..)`, ...). `#[route]` sees the item's `cfg`
+    /// attributes only when they hold in the build that expands it, so this
+    /// tells the collector which twin of an identical-signature
+    /// `#[cfg(test)]` / `#[cfg(not(test))]` pair this build stored, with no
+    /// dependence on the compiler's argv (see `collector::test_scope`).
+    pub own_test_only: bool,
 }
 
 /// Per-crate storage for route metadata collected by `#[route]` attribute
@@ -162,7 +169,7 @@ fn status_code_literal(
 /// code (`400..=599`, the same rule `args.rs` enforces on the attribute). A
 /// dropped entry (a named constant, an out-of-range status) would leave its
 /// response undocumented with no diagnostic, so it is a compile error instead.
-fn extract_error_status_codes(arr: &syn::ExprArray) -> syn::Result<Option<Vec<u16>>> {
+pub fn extract_error_status_codes(arr: &syn::ExprArray) -> syn::Result<Option<Vec<u16>>> {
     let codes = arr
         .elems
         .iter()
@@ -231,7 +238,7 @@ fn collect_string_literal_values(arr: &syn::ExprArray) -> Vec<String> {
 
 /// Extract `String` tags from a `syn::ExprArray`, erroring on any non-string
 /// entry.  An all-empty / no-string array yields `None`.
-fn extract_tag_strings(arr: &syn::ExprArray) -> syn::Result<Option<Vec<String>>> {
+pub fn extract_tag_strings(arr: &syn::ExprArray) -> syn::Result<Option<Vec<String>>> {
     require_string_literal_elems(arr, "tags")?;
     let tags = collect_string_literal_values(arr);
     Ok(if tags.is_empty() { None } else { Some(tags) })
@@ -246,7 +253,7 @@ fn parse_example_string(lit: &syn::LitStr) -> serde_json::Value {
 ///
 /// Every entry must be a `(status literal, schema path)` tuple: a malformed
 /// entry is a compile error, not a response the document silently lacks.
-fn extract_typed_responses(arr: &syn::ExprArray) -> syn::Result<Option<Vec<(u16, String)>>> {
+pub fn extract_typed_responses(arr: &syn::ExprArray) -> syn::Result<Option<Vec<(u16, String)>>> {
     // A status listed twice would keep only the last schema: a compile error,
     // not a documented response that silently disappears.
     let mut seen = std::collections::HashSet::new();
@@ -466,6 +473,7 @@ pub fn process_route_attribute(
         description,
         fn_sig_str: quote::quote!(#fn_sig).to_string(),
         inline_module,
+        own_test_only: crate::collector::test_scope::attrs_test_only(&item_fn.attrs),
         file_path: source_file.map(|p| p.display().to_string()),
     };
     register_route(stored);

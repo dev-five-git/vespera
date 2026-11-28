@@ -125,6 +125,7 @@ fn stored_test_only_routes(
                     stored.fn_name.trim_start_matches("r#"),
                     stored.method.as_deref().unwrap_or("get"),
                     &stored.fn_sig_str,
+                    stored.own_test_only,
                 )
         })
         .collect();
@@ -145,6 +146,37 @@ fn stored_test_only_routes(
                 .to_ascii_lowercase(),
         })
         .collect()
+}
+
+/// The test-only side of one file's stored routes: compiled routes behind a
+/// test-only `#[cfg(..)]` (a test build registered them) are mounted but never
+/// documented, so they are recorded in `test_only_routes`, and the production
+/// twin of an identical-signature one is documented in its place
+/// (`documented_twins`, see [`production_twin_routes`]).
+fn record_test_only_routes(
+    metadata: &mut CollectedMetadata,
+    file: &Path,
+    (file_path, base_path, module_path): (&str, &str, &str),
+    file_test_only: bool,
+    stored_routes: &[&StoredRouteInfo],
+) {
+    let defs = test_scope::fn_definitions(file);
+    metadata.test_only_routes.extend(stored_test_only_routes(
+        file_path,
+        file_test_only,
+        &defs,
+        stored_routes,
+    ));
+    if !file_test_only {
+        metadata.documented_twins.extend(production_twin_routes(
+            file,
+            file_path,
+            base_path,
+            module_path,
+            &defs,
+            stored_routes,
+        ));
+    }
 }
 
 /// Fast path: push one file's routes straight from its `ROUTE_STORAGE`
@@ -248,34 +280,124 @@ fn push_parsed_routes(
     let n = route_entries.len();
     for (i, (fn_item, route_info)) in route_entries.into_iter().enumerate() {
         let route_path = build_route_path(base_path, route_info.path.as_deref());
-
-        // Summary / description: route attributes > doc comment (first
-        // line → summary, rest → description) — same rule as `#[route]`.
-        let (summary, description) =
-            doc_summary_and_description(route_info.summary, route_info.description, &fn_item.attrs);
-
         let (mp, fp) = take_or_clone(module_path, file_path, i + 1 == n);
-
-        metadata.routes.push(RouteMetadata {
-            method: route_info.method,
-            path: route_path,
-            function_name: fn_item.sig.ident.to_string(),
-            module_path: mp,
-            file_path: fp,
-            success_status: route_info.success_status,
-            error_status: route_info.error_status,
-            typed_responses: route_info.typed_responses,
-            tags: route_info.tags,
-            security: route_info.security,
-            headers: route_info.headers,
-            operation_id: route_info.operation_id,
-            summary,
-            request_example: route_info.request_example,
-            response_example: route_info.response_example,
-            deprecated: route_info.deprecated || has_deprecated_attr(&fn_item.attrs),
-            description,
-        });
+        metadata.routes.push(parsed_route_metadata(
+            fn_item, route_info, route_path, mp, fp,
+        ));
     }
+}
+
+/// The `RouteMetadata` of one route read from its parsed fn (the slow path,
+/// and the production twins of [`production_twin_routes`]).
+fn parsed_route_metadata(
+    fn_item: &syn::ItemFn,
+    route_info: crate::route::RouteInfo,
+    route_path: String,
+    module_path: String,
+    file_path: String,
+) -> RouteMetadata {
+    // Summary / description: route attributes > doc comment (first
+    // line → summary, rest → description) — same rule as `#[route]`.
+    let (summary, description) =
+        doc_summary_and_description(route_info.summary, route_info.description, &fn_item.attrs);
+    RouteMetadata {
+        method: route_info.method,
+        path: route_path,
+        function_name: fn_item.sig.ident.to_string(),
+        module_path,
+        file_path,
+        success_status: route_info.success_status,
+        error_status: route_info.error_status,
+        typed_responses: route_info.typed_responses,
+        tags: route_info.tags,
+        security: route_info.security,
+        headers: route_info.headers,
+        operation_id: route_info.operation_id,
+        summary,
+        request_example: route_info.request_example,
+        response_example: route_info.response_example,
+        deprecated: route_info.deprecated || has_deprecated_attr(&fn_item.attrs),
+        description,
+    }
+}
+
+/// The documented production twins of `file`'s stored test-only routes.
+///
+/// An identical-signature `#[cfg(not(test))]` twin of a stored `#[cfg(test)]`
+/// route is compiled out of this build, so no `#[route]` registered it. The
+/// document must still describe it (the `cargo build` document does), so its
+/// route is read from the parsed file. It goes to `documented_twins`, not
+/// `routes`: the router is generated from `routes`, and this build has no such
+/// fn to mount. A stored entry without such a twin needs nothing here.
+fn production_twin_routes(
+    file: &Path,
+    file_path: &str,
+    base_path: &str,
+    module_path: &str,
+    defs: &[test_scope::FnDefinition],
+    stored_routes: &[&StoredRouteInfo],
+) -> Vec<RouteMetadata> {
+    let twins: Vec<&StoredRouteInfo> = stored_routes
+        .iter()
+        .copied()
+        .filter(|stored| stored.own_test_only && has_production_twin(defs, stored))
+        .collect();
+    if twins.is_empty() {
+        return Vec::new();
+    }
+    crate::schema_macro::file_cache::get_parsed_file(file).map_or_else(Vec::new, |file_ast| {
+        twins
+            .into_iter()
+            .filter_map(|stored| {
+                production_route(&file_ast, file, (file_path, base_path, module_path), stored)
+            })
+            .collect()
+    })
+}
+
+/// The route of the production fn that is `stored`'s identical-signature twin
+/// in `file_ast` (`None` when no such fn is in the file).
+fn production_route(
+    file_ast: &syn::File,
+    file: &Path,
+    (file_path, base_path, module_path): (&str, &str, &str),
+    stored: &StoredRouteInfo,
+) -> Option<RouteMetadata> {
+    let name = stored.fn_name.trim_start_matches("r#");
+    let method = stored.method.as_deref().unwrap_or("get");
+    file_ast.items.iter().find_map(|item| match item {
+        Item::Fn(fn_item) => {
+            let sig = crate::route_impl::stored_signature(&fn_item.sig, Some(file));
+            let route_info = extract_route_info(&fn_item.attrs)?;
+            let same_fn = fn_item.sig.ident.to_string().trim_start_matches("r#") == name
+                && route_info.method.eq_ignore_ascii_case(method)
+                && quote::quote!(#sig).to_string() == stored.fn_sig_str;
+            (same_fn && !test_scope::attrs_test_only(&fn_item.attrs)).then(|| {
+                let route_path = build_route_path(base_path, route_info.path.as_deref());
+                parsed_route_metadata(
+                    fn_item,
+                    route_info,
+                    route_path,
+                    module_path.to_owned(),
+                    file_path.to_owned(),
+                )
+            })
+        }
+        _ => None,
+    })
+}
+
+/// Whether `defs` holds a production (not test-only) fn with the name, method
+/// and signature of the stored route `stored`.
+fn has_production_twin(defs: &[test_scope::FnDefinition], stored: &StoredRouteInfo) -> bool {
+    let name = stored.fn_name.trim_start_matches("r#");
+    let method = stored.method.as_deref().unwrap_or("get");
+    defs.iter().any(|def| {
+        !def.test_only
+            && def.name == name
+            && def.method.eq_ignore_ascii_case(method)
+            && def.signature == stored.fn_sig_str
+    })
 }
 
 /// The hash of the `mod` table of the route folder `folder_path` (see
@@ -418,16 +540,14 @@ pub fn collect_metadata_from_files<'a>(
                     file, &found,
                 )));
             }
-            // Compiled routes behind a test-only `#[cfg(..)]` (a test build
-            // registered them): mounted, but never documented.
             let file_test_only = test_scope.file_test_only(file) || inner_test_only(file);
-            let defs = test_scope::fn_definitions(file);
-            metadata.test_only_routes.extend(stored_test_only_routes(
-                &file_path,
+            record_test_only_routes(
+                &mut metadata,
+                file,
+                (&file_path, &base_path, &module_path),
                 file_test_only,
-                &defs,
                 stored_routes,
-            ));
+            );
             push_stored_routes(
                 &mut metadata,
                 &base_path,

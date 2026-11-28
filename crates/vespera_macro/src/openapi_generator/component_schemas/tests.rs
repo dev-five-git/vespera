@@ -614,6 +614,7 @@ fn ambiguous_alias_is_rejected_only_when_used(
     let mut metadata = CollectedMetadata::new();
     metadata.structs = structs;
     let storage = [crate::route_impl::StoredRouteInfo {
+        own_test_only: false,
         fn_sig_str: signature.to_string(),
         inline_module: None,
         fn_name: "h".to_string(),
@@ -647,6 +648,7 @@ fn ambiguous_alias_used_only_by_a_test_only_route_is_not_rejected() {
             method: "get".to_string(),
         });
     let storage = [crate::route_impl::StoredRouteInfo {
+        own_test_only: false,
         fn_sig_str: "async fn h(Json(body): Json<Foo>) -> String".to_string(),
         fn_name: "h".to_string(),
         method: Some("get".to_string()),

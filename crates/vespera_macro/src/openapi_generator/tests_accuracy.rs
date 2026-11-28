@@ -35,6 +35,7 @@ pub(super) fn route(path: &str, fn_name: &str) -> RouteMetadata {
 
 pub(super) fn stored(fn_name: &str, sig: &str) -> StoredRouteInfo {
     StoredRouteInfo {
+        own_test_only: false,
         fn_name: fn_name.to_string(),
         method: Some("get".to_string()),
         custom_path: None,
@@ -218,6 +219,7 @@ pub(super) fn post(path: &str, fn_name: &str) -> RouteMetadata {
 
 pub(super) fn stored_post(fn_name: &str, sig: &str) -> StoredRouteInfo {
     StoredRouteInfo {
+        own_test_only: false,
         method: Some("post".to_string()),
         ..stored(fn_name, sig)
     }

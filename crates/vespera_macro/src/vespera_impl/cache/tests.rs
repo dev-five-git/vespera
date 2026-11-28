@@ -343,6 +343,7 @@ fn sidecar_without_expected_hash_never_matches() {
 #[test]
 fn stored_route_signatures_contribute_to_schema_hash() {
     let route = |sig: &str| crate::route_impl::StoredRouteInfo {
+        own_test_only: false,
         fn_name: "get_user".to_string(),
         method: None,
         custom_path: None,

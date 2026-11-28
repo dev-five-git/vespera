@@ -338,6 +338,7 @@ fn route_storage_dedup_skips_already_in_ast() {
         .push(route_meta("GET", "/users", "get_users", &route_file_path));
 
     let route_storage = vec![StoredRouteInfo {
+        own_test_only: false,
         fn_name: "get_users".to_string(),
         method: Some("get".to_string()),
         custom_path: None,
@@ -401,6 +402,7 @@ fn route_storage_fast_path_when_fn_not_in_file_cache() {
         &route_file.to_string_lossy(),
     ));
     let route_storage = vec![StoredRouteInfo {
+        own_test_only: false,
         fn_name: "get_users".to_string(),
         method: Some("get".to_string()),
         custom_path: None,
@@ -448,6 +450,7 @@ fn route_storage_fast_path_disambiguates_same_fn_name_by_file_path() {
 
     let route_storage = vec![
         StoredRouteInfo {
+            own_test_only: false,
             fn_name: "list".to_string(),
             method: Some("get".to_string()),
             custom_path: None,
@@ -468,6 +471,7 @@ fn route_storage_fast_path_disambiguates_same_fn_name_by_file_path() {
             file_path: Some(users_path),
         },
         StoredRouteInfo {
+            own_test_only: false,
             fn_name: "list".to_string(),
             method: Some("get".to_string()),
             custom_path: None,
@@ -548,6 +552,7 @@ fn route_storage_legacy_none_file_path_never_shadows_a_parsed_handler() {
         syn::parse_str("pub fn list() -> i32 { 1 }").unwrap(),
     );
     let route_storage = vec![StoredRouteInfo {
+        own_test_only: false,
         fn_name: "list".to_string(),
         method: Some("get".to_string()),
         fn_sig_str: "fn list() -> String".to_string(),
@@ -613,6 +618,7 @@ fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous(
     }
 
     let entry = StoredRouteInfo {
+        own_test_only: false,
         fn_name: "list".to_string(),
         method: Some("get".to_string()),
         fn_sig_str: "fn list() -> bool".to_string(),

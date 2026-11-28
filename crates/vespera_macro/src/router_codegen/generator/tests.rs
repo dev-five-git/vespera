@@ -520,6 +520,7 @@ fn test_generate_router_code_unknown_http_method() {
         crons: Vec::new(),
         cfg_routes: Vec::new(),
         test_only_routes: Vec::new(),
+        documented_twins: Vec::new(),
     };
     metadata.routes.push(crate::metadata::RouteMetadata {
         method: "INVALID".to_string(),

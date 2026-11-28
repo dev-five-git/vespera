@@ -406,11 +406,13 @@ mod tests {
         std::fs::write(&moved, "#[route(get)] pub async fn moved() {}").unwrap();
         file_cache::bump_epoch();
         let stale = crate::route_impl::StoredRouteInfo {
+            own_test_only: false,
             fn_name: "moved".to_string(),
             inline_module: Some("old".to_string()),
             ..Default::default()
         };
         let current = crate::route_impl::StoredRouteInfo {
+            own_test_only: false,
             inline_module: Some(String::new()),
             ..stale.clone()
         };
@@ -421,6 +423,7 @@ mod tests {
         // A nested stored scope reports its innermost module, like the
         // source scan (never the `v2::inner` path as a file name).
         let nested = crate::route_impl::StoredRouteInfo {
+            own_test_only: false,
             inline_module: Some("v2::inner".to_string()),
             ..stale.clone()
         };

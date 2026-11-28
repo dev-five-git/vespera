@@ -216,7 +216,7 @@ pub fn find_workspace_root(manifest_path: &Path) -> PathBuf {
     if let Some(cached) = WORKSPACE_ROOT_CACHE.with(|c| c.borrow().get(manifest_path).cloned()) {
         return cached;
     }
-    let resolved = find_workspace_root_uncached(manifest_path);
+    let resolved = find_workspace_root_uncached(manifest_path, None);
     WORKSPACE_ROOT_CACHE.with(|c| {
         c.borrow_mut()
             .insert(manifest_path.to_path_buf(), resolved.clone());
@@ -224,7 +224,10 @@ pub fn find_workspace_root(manifest_path: &Path) -> PathBuf {
     resolved
 }
 
-fn find_workspace_root_uncached(manifest_path: &Path) -> PathBuf {
+/// The walk of [`find_workspace_root`] without its cache. `ceiling` (inclusive)
+/// stops the walk: the fallback tests pass their temp root, so an ancestor
+/// `Cargo.lock` or `[workspace]` on the host cannot decide them.
+fn find_workspace_root_uncached(manifest_path: &Path, ceiling: Option<&Path>) -> PathBuf {
     // Look for workspace root by finding a Cargo.toml with a `workspace` table
     let mut current = Some(manifest_path);
     let mut last_with_lock = None;
@@ -243,6 +246,9 @@ fn find_workspace_root_uncached(manifest_path: &Path) -> PathBuf {
             return dir.to_path_buf();
         }
 
+        if ceiling == Some(dir) {
+            break;
+        }
         current = dir.parent();
     }
 
@@ -428,7 +434,7 @@ mod tests {
         fs::write(member.join("Cargo.lock"), "").expect("Failed to write Cargo.lock");
         fs::write(member.join("Cargo.toml"), "[package]\nname = \"member\"")
             .expect("Failed to write Cargo.toml");
-        assert_eq!(find_workspace_root(&member), top);
+        assert_eq!(find_workspace_root_uncached(&member, Some(top)), top);
     }
 
     #[test]
@@ -439,7 +445,10 @@ mod tests {
         fs::create_dir(&crate_dir).expect("Failed to create crate dir");
         fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"crate\"")
             .expect("Failed to write Cargo.toml");
-        assert_eq!(find_workspace_root(&crate_dir), crate_dir);
+        assert_eq!(
+            find_workspace_root_uncached(&crate_dir, Some(temp_dir.path())),
+            crate_dir
+        );
     }
 
     #[test]

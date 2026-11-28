@@ -45,17 +45,19 @@ use crate::schema_macro::cfg_eval::{Predicate, compiled_out, statically_active, 
 use crate::schema_macro::field_attrs::field_cfgs;
 use crate::schema_macro::file_cache;
 
-use imports::{CronImports, cron_imports};
+use imports::{CronImports, Inherited, cron_imports};
 
 /// Substring every `#[cron(..)]` / `#[vespera::cron(..)]` attribute contains.
 /// Only a pre-filter: `#[cron ("..")]` is valid Rust too, so the marker is the
 /// name alone and the parse decides what is a job.
 const CRON_ATTR_MARKER: &str = "cron";
 
-/// Substring of a glob import (`use super::*;`, `use crate::*;`). A file with
-/// one may use a cron alias of its enclosing module without spelling `cron`
-/// itself (see [`CronImports::inheriting`]), so it is parsed too.
-const GLOB_IMPORT_MARKER: &str = "::*";
+/// Substrings of a use item that brings a name of the parent or the crate root
+/// into a module: a glob (`use super::*;`, `use crate::*;`) or a single name
+/// (`use super::job;`, round-45 R45-MR5-M1). Such a file may use a cron alias of
+/// its enclosing module without spelling `cron` itself (see
+/// [`CronImports::inheriting`]), so it is parsed too.
+const PARENT_IMPORT_MARKERS: [&str; 3] = ["::*", "use super::", "use crate::"];
 
 /// Build the cron job list for one `vespera!` expansion: the storage entries
 /// first (unchanged order), then any job the module-tree scan finds that the
@@ -428,15 +430,6 @@ struct Scope<'a> {
     root: Inherited<'a>,
 }
 
-/// A module's effective `use` state, as a glob of a child module inherits it:
-/// whether its bare `cron` is another crate's (see [`CronImports::foreign`]),
-/// and the imports in effect (see [`CronImports::inheriting`]).
-#[derive(Clone, Copy)]
-struct Inherited<'a> {
-    foreign: bool,
-    imports: &'a CronImports,
-}
-
 impl ModuleTree {
     fn from_root(root: &Path, src_dir: &Path) -> Self {
         let mut tree = Self::default();
@@ -490,9 +483,7 @@ impl ModuleTree {
         let foreign = module
             .imports
             .foreign(scope.parent.foreign, scope.root.foreign);
-        let imports = module
-            .imports
-            .inheriting(scope.parent.imports, scope.root.imports);
+        let imports = module.imports.inheriting(scope.parent, scope.root);
         let own = Inherited {
             foreign,
             imports: &imports,
@@ -690,8 +681,10 @@ struct CachedSummary(Option<std::rc::Rc<FileSummary>>);
 
 fn file_summary(file: &Path) -> Option<std::rc::Rc<FileSummary>> {
     file_cache::derived(file, |content| {
-        let collect_jobs =
-            content.contains(CRON_ATTR_MARKER) || content.contains(GLOB_IMPORT_MARKER);
+        let collect_jobs = content.contains(CRON_ATTR_MARKER)
+            || PARENT_IMPORT_MARKERS
+                .iter()
+                .any(|marker| content.contains(marker));
         CachedSummary(
             (content.contains("mod") || collect_jobs)
                 .then(|| syn::parse_file(content).ok())

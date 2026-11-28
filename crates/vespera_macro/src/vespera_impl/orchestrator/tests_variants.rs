@@ -130,6 +130,7 @@ fn openapi_json_does_not_depend_on_cfg_test_items() {
     assert!(!library_doc.contains("/users/debug"), "{library_doc}");
 
     let stored = |name: &str, path: Option<&str>| crate::route_impl::StoredRouteInfo {
+        own_test_only: false,
         fn_name: name.to_string(),
         method: Some("get".to_string()),
         custom_path: path.map(str::to_string),
@@ -206,6 +207,7 @@ fn gating_a_module_in_the_crate_root_invalidates_the_cache() {
     ));
     let schema_storage = HashMap::from([("Fixture".to_string(), fixture)]);
     let route_storage = [crate::route_impl::StoredRouteInfo {
+        own_test_only: false,
         fn_name: "probe".to_string(),
         method: Some("get".to_string()),
         file_path: Some(src.join("routes/debug.rs").display().to_string()),

@@ -209,19 +209,20 @@ fn same_named_route_twins_are_told_apart_by_method_and_signature() {
     )]);
     let defs = fn_definitions(&krate.path().join("src").join("twins.rs"));
     let signature = defs[1].signature.clone();
-    assert!(!route_test_only(&defs, "list", "post", &signature));
-    assert!(route_test_only(&defs, "list", "get", &signature));
+    assert!(!route_test_only(&defs, "list", "post", &signature, false));
+    assert!(route_test_only(&defs, "list", "get", &signature, false));
     // A method or signature no definition has is not a test-only route.
-    assert!(!route_test_only(&defs, "list", "put", &signature));
+    assert!(!route_test_only(&defs, "list", "put", &signature, false));
     assert!(!route_test_only(
         &defs,
         "list",
         "post",
-        "async fn list (x : u8)"
+        "async fn list (x : u8)",
+        false
     ));
-    assert!(!route_test_only(&defs, "missing", "get", &signature));
+    assert!(!route_test_only(&defs, "missing", "get", &signature, false));
     // A name whose only definitions are test-only needs no method match.
-    assert!(route_test_only(&defs, "other", "put", "anything"));
+    assert!(route_test_only(&defs, "other", "put", "anything", false));
 }
 
 /// The `#[vespera::route(..)]` spelling carries its method like `#[route(..)]`:
@@ -238,8 +239,8 @@ fn vespera_route_twins_are_told_apart_by_method() {
     assert_eq!(defs[0].method, "get");
     assert_eq!(defs[1].method, "post");
     let signature = defs[1].signature.clone();
-    assert!(!route_test_only(&defs, "list", "post", &signature));
-    assert!(route_test_only(&defs, "list", "get", &signature));
+    assert!(!route_test_only(&defs, "list", "post", &signature, false));
+    assert!(route_test_only(&defs, "list", "get", &signature, false));
 }
 
 /// The stored signature of an alias-expanded return type differs from the
@@ -252,8 +253,8 @@ fn alias_expanded_signature_matches_its_single_method_twin() {
     )]);
     let defs = fn_definitions(&krate.path().join("src").join("aliased.rs"));
     let expanded = "async fn list () -> Expanded";
-    assert!(route_test_only(&defs, "list", "get", expanded));
-    assert!(!route_test_only(&defs, "list", "post", expanded));
+    assert!(route_test_only(&defs, "list", "get", expanded, false));
+    assert!(!route_test_only(&defs, "list", "post", expanded, false));
 }
 
 /// Two declarations load the same file, one of them ungated: the file is in

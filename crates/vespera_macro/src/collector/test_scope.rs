@@ -516,12 +516,12 @@ fn module_segments(src_dir: &Path, file: &Path) -> Option<Vec<String>> {
 /// entry of one apart from a same-named fn behind another `cfg`.
 #[derive(Clone)]
 pub struct FnDefinition {
-    name: String,
+    pub(super) name: String,
     /// The `#[route(<method>)]` method, `get` for a bare `#[route]`.
-    method: String,
+    pub(super) method: String,
     /// `quote!(#sig)` of the alias-expanded signature: the text `StoredRouteInfo::fn_sig_str` keeps.
     pub(super) signature: String,
-    test_only: bool,
+    pub(super) test_only: bool,
 }
 
 /// The `#[route]` method of `attrs`, lower case (`get` when none is named).
@@ -598,8 +598,15 @@ pub fn fn_definitions(file: &Path) -> Vec<FnDefinition> {
 /// file whose fns are `defs` is a test-only fn. Same-named fns are told
 /// apart by method and signature: `#[cfg(test)] #[route(get)] fn list()`
 /// next to `#[route(post)] fn list()` leaves the production `POST` route
-/// documented.
-pub fn route_test_only(defs: &[FnDefinition], name: &str, method: &str, signature: &str) -> bool {
+/// documented. `own_test_only` is the entry's own `cfg` verdict
+/// (`StoredRouteInfo::own_test_only`).
+pub fn route_test_only(
+    defs: &[FnDefinition],
+    name: &str,
+    method: &str,
+    signature: &str,
+    own_test_only: bool,
+) -> bool {
     let same_name: Vec<&FnDefinition> = defs.iter().filter(|def| def.name == name).collect();
     if same_name.is_empty() {
         return false;
@@ -623,21 +630,15 @@ pub fn route_test_only(defs: &[FnDefinition], name: &str, method: &str, signatur
         same_method
     };
     // Identical-signature twins (`#[cfg(test)]` and `#[cfg(not(test))]` of one
-    // fn) cannot be told apart by the stored text. `cfg` compiles exactly one
-    // of them in this build, and the storage holds that one: a `cfg(test)`
-    // twin is the stored one only in the `--test` harness build.
+    // fn) cannot be told apart by the stored text. `#[route]` expands only the
+    // twin this build compiles, and it keeps that twin's own `cfg` attributes,
+    // so the entry's own verdict decides. No compiler argument is read: the
+    // document is the same under `cargo build`, `cargo test` and
+    // rust-analyzer (which enables `cfg(test)` without the `--test` argv).
     if matching.len() > 1 {
-        return is_test_harness_build() && matching.iter().any(|def| def.test_only);
+        return own_test_only;
     }
     !matching.is_empty() && matching.iter().all(|def| def.test_only)
-}
-
-/// Whether this macro expands inside the `--test` harness build (the only
-/// build where a `cfg(test)` item is compiled; see `env_access::compiler_args`).
-fn is_test_harness_build() -> bool {
-    crate::env_access::compiler_args()
-        .iter()
-        .any(|arg| arg == "--test")
 }
 
 /// A `(line, column)` source position, as `proc_macro2` reports it.
@@ -930,6 +931,9 @@ pub fn documented_view(metadata: &CollectedMetadata) -> Cow<'_, CollectedMetadat
                     || test_only.method.eq_ignore_ascii_case(&route.method))
         })
     });
+    // The production twins of stored test-only routes are documented in their
+    // place (see `collector::production_twin_routes`).
+    view.routes.append(&mut view.documented_twins);
     let mut test_structs = test_structs.into_iter();
     view.structs
         .retain(|_| !test_structs.next().unwrap_or_default());

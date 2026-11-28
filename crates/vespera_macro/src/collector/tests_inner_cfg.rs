@@ -54,6 +54,7 @@ fn fast_path_inner_test_cfg_makes_the_route_file_test_only() {
     crate::schema_macro::file_cache::bump_epoch();
     let file_path = file.display().to_string();
     let storage = [StoredRouteInfo {
+        own_test_only: false,
         fn_name: "probe".to_string(),
         method: Some("get".to_string()),
         fn_sig_str: "async fn probe()".to_string(),
