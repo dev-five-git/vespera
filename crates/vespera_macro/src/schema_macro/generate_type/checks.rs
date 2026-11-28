@@ -8,6 +8,7 @@ use syn::punctuated::Punctuated;
 
 use crate::parser::strip_raw_prefix_owned;
 
+use super::super::field_selection::resolve_name;
 use super::super::from_model::FieldMapping;
 use super::super::input::SchemaTypeInput;
 use super::super::transformation::unreadable_serde_path;
@@ -25,9 +26,6 @@ pub(super) struct Emitted<'a> {
     /// The `relation_adapters` entries a HasOne / BelongsTo field used.
     pub used_adapters: &'a HashSet<String>,
     pub field_mappings: &'a [FieldMapping],
-    /// The Rust identifiers `pick` selects (each name resolved, see
-    /// `field_selection`).
-    pub picked: &'a HashSet<String>,
 }
 
 /// The source names of the emitted fields (`#[cfg]` twins share one).
@@ -55,12 +53,28 @@ pub(super) fn check_emitted(
     input: &SchemaTypeInput,
     partial_fields: Option<&Vec<String>>,
     emitted: &Emitted<'_>,
+    source: &syn::ItemStruct,
     at: &SpannedSource<'_>,
     source_type_name: &str,
 ) -> syn::Result<()> {
     let dropped = names_not_emitted(emitted);
-    let mut picked: Vec<&str> = emitted.picked.iter().map(String::as_str).collect();
-    picked.sort_unstable();
+    // Each `pick` name as written (its span and message) with the Rust
+    // identifier it resolves to (the `dropped` key), R43-SM5-V1.
+    let mut picked: Vec<(&str, String)> = input
+        .pick
+        .iter()
+        .flatten()
+        .filter_map(|written| {
+            resolve_name(source, written)
+                .ok()
+                .map(|rust| (written.as_str(), rust))
+        })
+        .collect();
+    picked.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+    let picked: Vec<(&str, &str)> = picked
+        .iter()
+        .map(|(written, rust)| (*written, rust.as_str()))
+        .collect();
     for (param, names) in [
         (
             "rename",
@@ -68,7 +82,7 @@ pub(super) fn check_emitted(
                 .rename
                 .iter()
                 .flatten()
-                .map(|(from, _)| from.as_str())
+                .map(|(from, _)| (from.as_str(), from.as_str()))
                 .collect::<Vec<_>>(),
         ),
         (
@@ -76,7 +90,7 @@ pub(super) fn check_emitted(
             partial_fields
                 .into_iter()
                 .flatten()
-                .map(String::as_str)
+                .map(|field| (field.as_str(), field.as_str()))
                 .collect(),
         ),
         ("pick", picked),

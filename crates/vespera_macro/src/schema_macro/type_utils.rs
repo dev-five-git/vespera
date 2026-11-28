@@ -360,7 +360,15 @@ impl TypeResolver<'_> {
             .map(|segment| strip_raw(&segment.ident))
             .collect();
         match resolve_name(&segments, self.module) {
-            Resolved::Path(resolved) => Some(path_tokens(&resolved)),
+            // A const the call site cannot read is refused like a private type
+            // is, not left for an E0603 in the emitted DTO (R43-SM4-L2).
+            Resolved::Path(resolved) => {
+                let ident = &path.path.segments.last()?.ident;
+                Some(
+                    refuse_unreadable(ident, &resolved, self.call_site.as_deref())
+                        .unwrap_or_else(|| path_tokens(&resolved)),
+                )
+            }
             Resolved::Unknown => None,
         }
     }
@@ -710,9 +718,12 @@ const ALIAS_CRATES: &[&str] = &["sea_orm", "vespera", "axum_typed_multipart", "t
 const CHRONO_ONLY_NAMES: &[&str] = &["NaiveDate", "NaiveDateTime", "NaiveTime", "FixedOffset"];
 
 /// The names sea-orm's `prelude` exports that a bare SeaORM-glob name can
-/// resolve to (the aliases above, `Uuid`, `Decimal`, ..). `Date` / `Time` /
-/// `DateTime` are exported only with sea-orm's `with-chrono` feature, which
-/// the macro cannot see, so they are taken as exported.
+/// resolve to (the aliases above, `Uuid`, `Decimal`, ..). The feature-gated
+/// ones (`Date` / `Time` / `DateTime` behind `with-chrono`, `TimeDateTime`
+/// behind `with-time`, `IpNetwork` behind `with-ipnetwork`, ...) are exported
+/// only with their feature, which the macro cannot see, so they are taken as
+/// exported (R43-SM4-M1: `IpNetwork` and `TimeDateTime` were routed to an
+/// external glob, which does not export them).
 const SEA_ORM_PRELUDE_NAMES: &[&str] = &[
     "Value",
     "Json",
@@ -729,9 +740,20 @@ const SEA_ORM_PRELUDE_NAMES: &[&str] = &[
     "ChronoDateTimeUtc",
     "ChronoUtc",
     "ChronoDateTimeLocal",
+    "ChronoUnixTimestamp",
+    "ChronoUnixTimestampMillis",
+    "TimeDate",
+    "TimeTime",
+    "TimeDateTime",
+    "TimeDateTimeWithTimeZone",
+    "TimeUnixTimestamp",
+    "TimeUnixTimestampMillis",
     "Uuid",
+    "TextUuid",
     "Decimal",
     "BigDecimal",
+    "IpNetwork",
+    "PgVector",
 ];
 
 /// The spanned refusal for a one-name type that resolved to the crate path

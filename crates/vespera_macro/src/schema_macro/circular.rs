@@ -409,6 +409,14 @@ mod tests {
         r"pub struct Model { pub id: i32, pub memo: other::dto::MemoSchema, }",
         vec![]
     )]
+    // R43-SM4-L1: a leading `::` names another crate's module, so its
+    // `MemoSchema` is not the source's even though the name matches.
+    #[case::plain_dto_of_another_crate(
+        &["crate", "models", "memo"],
+        &["crate", "models", "user"],
+        r"pub struct Model { pub id: i32, pub memo: ::shared_api::MemoSchema, }",
+        vec![]
+    )]
     #[case::plain_source_schema_through_super(
         &["crate", "models", "memo"],
         &["crate", "models", "user"],

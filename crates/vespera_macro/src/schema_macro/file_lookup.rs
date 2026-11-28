@@ -3,7 +3,7 @@
 mod fk;
 mod lookup;
 
-pub use fk::find_fk_column_from_target_entity;
+pub use fk::{find_fk_column_from_target_entity, names_other_crate};
 pub use lookup::LookupError;
 pub use lookup::is_extern_crate;
 pub use lookup::{

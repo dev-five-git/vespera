@@ -205,6 +205,10 @@ fn alias_named_type_from_two_external_globs_asks_for_an_explicit_import() {
 )]
 #[case::uuid("Uuid", "sea_orm :: prelude :: Uuid")]
 #[case::json("Json", "vespera :: serde_json :: Value")]
+// R43-SM4-M1 (round 43): feature-gated prelude names the glob cannot export
+// stay the SeaORM prelude's, not an external glob's `IpNetwork`.
+#[case::ip_network("IpNetwork", "sea_orm :: prelude :: IpNetwork")]
+#[case::time_date_time("TimeDateTime", "sea_orm :: prelude :: TimeDateTime")]
 #[case::char_primitive("char", "char")]
 #[case::str_primitive("str", "str")]
 fn sea_orm_prelude_and_external_glob_together(#[case] ty: &str, #[case] expected: &str) {

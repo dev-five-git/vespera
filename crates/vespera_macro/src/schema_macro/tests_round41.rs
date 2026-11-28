@@ -229,3 +229,27 @@ fn empty_schema_type_name_is_refused() {
     assert!(error.to_string().contains("must not be empty"), "{error}");
     assert!(syn::parse_str::<SchemaTypeInput>("Dto from User, name = \"Dto\"").is_ok());
 }
+
+/// R43-SM4-L2 (round 43): an array length naming a private const of another
+/// module (`[u8; crate::models::memo::HASH_LEN]`) is refused with the spanned
+/// "is private to" error, as a private type is, instead of an E0603 in the
+/// emitted DTO.
+#[test]
+fn private_const_array_length_of_another_module_is_refused() {
+    let dir = crate_with(&[
+        (
+            "models/memo.rs",
+            "const HASH_LEN: usize = 4;\n#[sea_orm(table_name = \"memos\")]\npub struct Model {\n    pub id: i32,\n}\n",
+        ),
+        (
+            "models/dto.rs",
+            "pub struct Model {\n    pub id: i32,\n    pub digest: [u8; crate::models::memo::HASH_LEN],\n}\n",
+        ),
+    ]);
+    let dsl = "DtoSchema from crate::models::dto::Model";
+    let error = dto_tokens(&dir, "crate::routes", dsl).unwrap();
+    assert!(
+        error.contains("is private to `crate::models::memo`"),
+        "{error}"
+    );
+}

@@ -76,6 +76,12 @@ fn same_named_structs_in_inline_mods_of_one_file_conflict() {
 #[case::single_item("\n\nstruct User { id: i64 }\n", true)]
 #[case::not_found("\n\nstruct Other { id: i64 }\n", false)]
 #[case::second_in_fn_body("fn f() { struct User; }\nstruct User { id: i64 }\n", false)]
+// R43-SM-L1: a `macro_rules!` body naming the item may declare a second `User`
+// the literal scan cannot see, so the move is ambiguous and refused.
+#[case::macro_rules_names_it(
+    "macro_rules! gen { () => { struct User; } }\nstruct User { id: i64 }\n",
+    false
+)]
 fn moved_item_replacement(#[case] source: &str, #[case] replaced: bool) {
     let dir = tempfile::TempDir::new().unwrap();
     let file = dir.path().join("models.rs");
@@ -153,6 +159,19 @@ fn moved_item_replacement(#[case] source: &str, #[case] replaced: bool) {
 fn count_items_named_descends_into_nested_items(#[case] source: &str, #[case] expected: usize) {
     let parsed: syn::File = syn::parse_str(source).unwrap();
     assert_eq!(count_items_named(&parsed.items, "X"), expected);
+}
+
+/// R43-SM-L1: a macro item counts (apart from the literal declarations) when
+/// its tokens name the item at any group depth, unless a `#[cfg]` rules it
+/// out; a macro naming another item does not count.
+#[rstest::rstest]
+#[case::macro_rules_mentions_name("macro_rules! gen { () => { struct X; } } struct X;", 1)]
+#[case::macro_rules_other_name("macro_rules! gen { () => { struct Y; } } struct X;", 0)]
+#[case::inactive_macro_item("#[cfg(any())] macro_rules! gen { () => { struct X; } } struct X;", 0)]
+#[case::invocation_naming_it("gen!(X);", 1)]
+fn macro_items_naming_the_item(#[case] source: &str, #[case] expected: usize) {
+    let parsed: syn::File = syn::parse_str(source).unwrap();
+    assert_eq!(count_named(&parsed.items, "X").1, expected);
 }
 
 /// R23-SM1: a span without a line (no position reported) for the derive's

@@ -138,11 +138,14 @@ pub fn relation_target_module(ty: &Type, module_path: &[String]) -> Option<Vec<S
 
 /// The module a plain (non-relation) type path names, resolved from
 /// `module_path` like [`relation_target_module`]: `other::dto::MemoSchema`
-/// is `crate::models::other::dto`. `None` for a bare name (`MemoSchema`),
-/// which names no module.
+/// is `crate::models::other::dto`. `None` for a bare name (`MemoSchema`, or
+/// `::MemoSchema`), which names no module. A leading `::` names another
+/// crate's module, kept as the empty first segment like
+/// [`relation_target_module`] (`::shared_api::MemoSchema` is
+/// `["", "shared_api"]`, R43-SM4-L1).
 pub fn path_target_module(path: &syn::Path, module_path: &[String]) -> Option<Vec<String>> {
     let segments = entity_segments(path);
-    if segments.len() < 2 || segments[0].is_empty() {
+    if segments.len() < 2 || (segments[0].is_empty() && segments.len() < 3) {
         return None;
     }
     let mut target = absolute_schema_segments(&segments, module_path);
@@ -858,6 +861,22 @@ mod tests {
         assert_eq!(
             relation_target_module(&ty, &segs("crate::models::cake")),
             expected.map(segs)
+        );
+    }
+
+    /// A plain type path's module (R43-SM4-L1): a leading `::` names another
+    /// crate's module (the empty first segment, as relation paths keep it); a
+    /// bare name, with or without `::`, names none.
+    #[rstest::rstest]
+    #[case::other_crate_module("::shared_api::MemoSchema", Some(vec!["", "shared_api"]))]
+    #[case::sibling_module("other::dto::MemoSchema", Some(vec!["crate", "models", "other", "dto"]))]
+    #[case::bare_name("MemoSchema", None)]
+    #[case::bare_extern_name("::MemoSchema", None)]
+    fn plain_path_target_modules(#[case] path: &str, #[case] expected: Option<Vec<&str>>) {
+        let path: syn::Path = syn::parse_str(path).unwrap();
+        assert_eq!(
+            path_target_module(&path, &segs("crate::models::memo")),
+            expected.map(|segments| segments.into_iter().map(String::from).collect())
         );
     }
 

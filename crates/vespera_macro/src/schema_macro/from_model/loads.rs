@@ -11,6 +11,7 @@ use syn::{Type, ext::IdentExt};
 
 use super::super::{
     file_cache::{get_fk_column, get_struct_from_schema_path},
+    file_lookup::names_other_crate,
     seaorm::{RelationFieldInfo, is_composite_columns, is_sea_orm_primary_key, normalize_columns},
     type_utils::{normalize_token_str, snake_to_pascal_case},
 };
@@ -98,7 +99,7 @@ pub(super) fn relation_load(
     let Some((from, to)) = get_fk_column(&schema_path_str, fk_rel) else {
         // A `::` path names a crate the compiler links, whose source is never
         // read here (R42-SM2-L2): say so rather than blame a missing field.
-        let extern_note = if schema_path_str.starts_with("::") {
+        let extern_note = if names_other_crate(&schema_path_str) {
             " (a `::` path names another crate: its source is not read)"
         } else {
             ""
@@ -163,16 +164,19 @@ pub(in crate::schema_macro) fn source_column_read(
     ))
 }
 
-/// The source field named `column` (a raw field is named by its column).
+/// The source field named `column` (a raw field is named by its column). A
+/// field whose `#[cfg]` is known to be false is not the one the compiler
+/// keeps, so it is skipped (R43-SM2-L1, like [`source_key_column`]).
 pub(in crate::schema_macro) fn source_field_named<'a>(
     source_fields: &'a syn::Fields,
     column: &str,
 ) -> Option<&'a syn::Field> {
     source_fields.iter().find(|field| {
-        field
-            .ident
-            .as_ref()
-            .is_some_and(|ident| ident.unraw() == column)
+        !crate::schema_macro::cfg_eval::compiled_out(&field.attrs)
+            && field
+                .ident
+                .as_ref()
+                .is_some_and(|ident| ident.unraw() == column)
     })
 }
 
@@ -435,5 +439,16 @@ mod tests {
         assert!(source_field_named(&fields, "type").is_some());
         assert!(source_field_named(&fields, "id").is_some());
         assert!(source_field_named(&fields, "missing").is_none());
+    }
+
+    /// R43-SM2-L1: a cfg-removed twin with other visibility is skipped, so the
+    /// visibility check reads the field the compiler keeps (not `pub`).
+    #[test]
+    fn source_field_named_skips_cfg_removed_twins() {
+        let fields = source_fields("#[cfg(any())] pub id: i32, id: i32");
+        let field = source_field_named(&fields, "id").expect("the active twin");
+        assert!(matches!(field.vis, syn::Visibility::Inherited));
+        let only_removed = source_fields("#[cfg(any())] pub id: i32");
+        assert!(source_field_named(&only_removed, "id").is_none());
     }
 }

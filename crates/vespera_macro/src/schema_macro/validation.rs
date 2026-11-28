@@ -434,19 +434,23 @@ pub fn validate_included<'a>(
 
 /// Rejects a `param` entry naming a field the type does not emit although
 /// `omit` / `pick` keep it (`dropped`: field → reason).
+///
+/// Each item is `(written, rust)`: the name as the user wrote it (the span and
+/// the message, R43-SM5-V1) and the Rust identifier it resolves to (the
+/// `dropped` key). A `rename` / `partial` name is both.
 pub fn validate_emitted<'a>(
     param: &str,
-    fields: impl IntoIterator<Item = &'a str>,
+    fields: impl IntoIterator<Item = (&'a str, &'a str)>,
     dropped: &std::collections::HashMap<String, &str>,
     at: &impl ErrorAt,
 ) -> Result<(), syn::Error> {
-    for field in fields {
-        if let Some(reason) = dropped.get(field) {
+    for (written, rust) in fields {
+        if let Some(reason) = dropped.get(rust) {
             return Err(at.error_at(
                 param,
-                field,
+                written,
                 format!(
-                    "`{param}` names field `{field}`, which this type does not include: {reason}"
+                    "`{param}` names field `{written}`, which this type does not include: {reason}"
                 ),
             ));
         }

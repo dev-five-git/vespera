@@ -1,6 +1,17 @@
 //! Foreign-key lookup for SeaORM HasMany relations.
 
-use super::lookup::find_struct_in_module;
+use super::lookup::{find_struct_in_module, is_extern_crate};
+
+/// Whether a written schema path names a crate the compiler links rather than
+/// this crate's module tree: a leading `::` (`::entities::user`), or a first
+/// segment linked by name (`use entity::user;`, R43-SM2-L2, as `lookup.rs`
+/// checks). The segments of such a path would otherwise be read from `src/`
+/// as if they were local (R42-SM2-L2).
+pub fn names_other_crate(target_schema_path: &str) -> bool {
+    let trimmed = target_schema_path.trim_start();
+    let first_segment = trimmed.split("::").next().unwrap_or_default().trim();
+    trimmed.starts_with("::") || is_extern_crate(first_segment)
+}
 
 /// Find the FK columns from the target entity for a `HasMany` relation with `via_rel`.
 ///
@@ -23,10 +34,7 @@ pub fn find_fk_column_from_target_entity(
         extract_belongs_to_from_field, extract_belongs_to_to_raw, extract_relation_enum,
     };
 
-    // A leading `::` names a crate the compiler links (`::entities::user`),
-    // not this crate's module tree: the segments below would drop the empty
-    // root and read `src/entities/..` as if it were local (R42-SM2-L2).
-    if target_schema_path.trim_start().starts_with("::") {
+    if names_other_crate(target_schema_path) {
         return None;
     }
 
@@ -139,6 +147,36 @@ pub struct Model {
         );
         assert_eq!(
             find_fk_column_from_target_entity("::models::notification::Schema", "Owner"),
+            None
+        );
+    }
+
+    /// R43-SM2-L2 (round 43): `use entity::user;` makes `entity::user::Schema` a
+    /// path the compiler links by name. This crate's `src/entity/user.rs` (which
+    /// holds a relation of the same name) is not read for it, while the local
+    /// spelling of the same path is.
+    #[test]
+    fn use_imported_extern_crate_target_is_not_read_from_this_crate() {
+        let temp_dir = TempDir::new().unwrap();
+        let entity_dir = temp_dir.path().join("src").join("entity");
+        std::fs::create_dir_all(&entity_dir).unwrap();
+        std::fs::write(
+            entity_dir.join("user.rs"),
+            "pub struct Model { pub id: i32, pub owner_id: i32, #[sea_orm(belongs_to = \"super::user::Entity\", from = \"owner_id\", to = \"id\", relation_enum = \"Owner\")] pub owner: BelongsTo<super::user::Entity> }",
+        )
+        .unwrap();
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+        assert_eq!(
+            find_fk_column_from_target_entity("entity::user::Schema", "Owner"),
+            Some("owner_id".to_string())
+        );
+        let _externs = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            "rustc\n--extern\nentity=/deps/libentity.rlib",
+        );
+        assert_eq!(
+            find_fk_column_from_target_entity("entity::user::Schema", "Owner"),
             None
         );
     }
