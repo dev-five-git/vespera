@@ -379,6 +379,9 @@ fn test_generate_schema_type_code_qualified_path_storage_lookup() {
     let (tokens, _metadata) = result.unwrap();
     let output = tokens.to_string();
     assert!(output.contains("UserSchema"));
+    // The storage entry's fields are the ones generated (R42-SM4-T1).
+    assert!(output.contains("pub id : i32"), "{output}");
+    assert!(output.contains("pub name : String"), "{output}");
 }
 
 // Test for qualified path not found error

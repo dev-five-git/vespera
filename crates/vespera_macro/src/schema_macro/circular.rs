@@ -9,7 +9,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::{
-    seaorm::relation_target_module,
+    seaorm::{path_target_module, relation_target_module},
     type_utils::{
         SeaOrmRelationKind, capitalize_first, first_generic_type_arg, is_seaorm_relation_type,
         seaorm_relation_inner_type, seaorm_relation_kind,
@@ -90,6 +90,12 @@ pub fn analyze_circular_refs(
             Some(_) => seaorm_relation_inner_type(&field.ty).is_some_and(|inner| {
                 type_targets_source_schema(inner, source_module, &capitalized_pattern)
             }),
+            None if module_aware => plain_field_targets_source(
+                &field.ty,
+                source_module_path,
+                related_module_path,
+                &capitalized_pattern,
+            ),
             None => type_targets_source_schema(&field.ty, source_module, &capitalized_pattern),
         };
         if circular {
@@ -164,6 +170,43 @@ fn type_targets_source_schema(
         }
         [] => false,
     }
+}
+
+/// `ty` without its `Option<..>` / `Box<..>` wrappers.
+fn unwrap_transparent(ty: &syn::Type) -> &syn::Type {
+    transparent_inner_type(ty, "Option")
+        .or_else(|| transparent_inner_type(ty, "Box"))
+        .map_or(ty, unwrap_transparent)
+}
+
+/// Whether a plain (non-relation) field's type names the source model's
+/// schema. The module-aware call judges a path by the module it resolves to
+/// (R42-SMB1-L1): `other::dto::MemoSchema` is another module's DTO, not the
+/// source's, and `memo::Thing` is no schema at all. A bare name names no
+/// module, so the name heuristic still applies to it.
+fn plain_field_targets_source(
+    ty: &syn::Type,
+    source_module_path: &[String],
+    related_module_path: &[String],
+    capitalized_schema: &str,
+) -> bool {
+    let syn::Type::Path(type_path) = unwrap_transparent(ty) else {
+        return false;
+    };
+    let Some(target) = path_target_module(&type_path.path, related_module_path) else {
+        let source_module = source_module_path
+            .last()
+            .map_or("", std::string::String::as_str);
+        return type_targets_source_schema(ty, source_module, capitalized_schema);
+    };
+    let last = type_path
+        .path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+        .unwrap_or_default();
+    target == source_module_path
+        && (matches!(last.as_str(), "Schema" | "Entity") || last == capitalized_schema)
 }
 
 /// Generate inline type construction for `from_model`.
@@ -353,6 +396,35 @@ mod tests {
         &["crate", "models", "cake"],
         &["crate", "models", "bakery"],
         r"pub struct Model { pub id: i32, pub cakes: HasMany<super::cake::Entity>, }",
+        vec![]
+    )]
+    // R42-SMB1-L1: a plain (non-relation) field is judged by the module its
+    // path resolves to. Another module's `MemoSchema` DTO is not the source
+    // `memo`'s schema; the source's own `Schema` (through `super`, or
+    // `Option<Box<..>>`) still is; a non-schema item of the source module,
+    // or a non-path type, is not.
+    #[case::plain_dto_of_another_module(
+        &["crate", "models", "memo"],
+        &["crate", "models", "user"],
+        r"pub struct Model { pub id: i32, pub memo: other::dto::MemoSchema, }",
+        vec![]
+    )]
+    #[case::plain_source_schema_through_super(
+        &["crate", "models", "memo"],
+        &["crate", "models", "user"],
+        r"pub struct Model { pub id: i32, pub memo: Option<Box<super::memo::Schema>>, }",
+        vec!["memo".to_string()]
+    )]
+    #[case::plain_source_item_is_not_a_schema(
+        &["crate", "models", "memo"],
+        &["crate", "models", "user"],
+        r"pub struct Model { pub id: i32, pub memo: super::memo::Thing, }",
+        vec![]
+    )]
+    #[case::plain_array_type(
+        &["crate", "models", "memo"],
+        &["crate", "models", "user"],
+        r"pub struct Model { pub id: i32, pub bytes: [u8; 4], }",
         vec![]
     )]
     fn module_aware_circular_fields(

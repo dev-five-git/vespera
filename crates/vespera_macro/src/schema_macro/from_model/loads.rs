@@ -96,10 +96,17 @@ pub(super) fn relation_load(
         });
     };
     let Some((from, to)) = get_fk_column(&schema_path_str, fk_rel) else {
+        // A `::` path names a crate the compiler links, whose source is never
+        // read here (R42-SM2-L2): say so rather than blame a missing field.
+        let extern_note = if schema_path_str.starts_with("::") {
+            " (a `::` path names another crate: its source is not read)"
+        } else {
+            ""
+        };
         return Err(syn::Error::new_spanned(
             source_type,
             format!(
-                "schema_type!: cannot load relation field `{field_name}`: no field of the `Model` behind `{schema_path_str}` has `#[sea_orm(relation_enum = \"{fk_rel}\", from = \"..\")]`; add it there, or `omit` the field"
+                "schema_type!: cannot load relation field `{field_name}`: no field of the `Model` behind `{schema_path_str}` has `#[sea_orm(relation_enum = \"{fk_rel}\", from = \"..\")]`; add it there, or `omit` the field{extern_note}"
             ),
         ));
     };
@@ -235,26 +242,33 @@ pub(super) fn sea_orm_value_ident(
     key: &str,
     value: &str,
 ) -> syn::Result<syn::Ident> {
-    syn::parse::Parser::parse_str(syn::ext::IdentExt::parse_any, value).map(raw_if_keyword).map_err(|_| {
-        syn::Error::new_spanned(
-            source_type,
-            format!(
-                "schema_type!: relation field `{field_name}` has `#[sea_orm({key} = \"{value}\")]`, but `{value}` is not a valid Rust identifier"
-            ),
-        )
-    })
+    syn::parse::Parser::parse_str(syn::ext::IdentExt::parse_any, value)
+        .ok()
+        .and_then(raw_if_keyword)
+        .ok_or_else(|| {
+            syn::Error::new_spanned(
+                source_type,
+                format!(
+                    "schema_type!: relation field `{field_name}` has `#[sea_orm({key} = \"{value}\")]`, but `{value}` is not a valid Rust identifier"
+                ),
+            )
+        })
 }
 
 /// `ident` as a raw identifier when it is a keyword that can be one
-/// (`ref` → `r#ref`; `self` / `Self` / `super` / `crate` cannot).
-fn raw_if_keyword(ident: syn::Ident) -> syn::Ident {
+/// (`ref` → `r#ref`; `self` / `Self` / `super` / `crate` cannot). `None` for
+/// `_`, which no raw spelling makes an identifier: `Ident::new_raw("_")`
+/// panicked the proc macro (R42-SM2-L1).
+fn raw_if_keyword(ident: syn::Ident) -> Option<syn::Ident> {
     let name = ident.to_string();
-    if syn::parse_str::<syn::Ident>(&name).is_ok()
+    if name == "_" {
+        None
+    } else if syn::parse_str::<syn::Ident>(&name).is_ok()
         || matches!(name.as_str(), "self" | "Self" | "super" | "crate")
     {
-        ident
+        Some(ident)
     } else {
-        syn::Ident::new_raw(&name, ident.span())
+        Some(syn::Ident::new_raw(&name, ident.span()))
     }
 }
 
@@ -273,6 +287,21 @@ mod tests {
         let field = syn::Ident::new("parent", proc_macro2::Span::call_site());
         let ident = sea_orm_value_ident(&source, &field, "from", value).unwrap();
         assert_eq!(ident.to_string(), expected);
+    }
+
+    /// R42-SM2-L1: a value that is no identifier (`_`, which `new_raw` panicked
+    /// on) is a spanned error, not a proc-macro panic.
+    #[rstest::rstest]
+    #[case::underscore("_")]
+    #[case::two_words("a b")]
+    fn non_identifier_columns_are_spanned_errors(#[case] value: &str) {
+        let source: Type = syn::parse_quote!(Model);
+        let field = syn::Ident::new("parent", proc_macro2::Span::call_site());
+        let err = sea_orm_value_ident(&source, &field, "from", value).unwrap_err();
+        assert!(
+            err.to_string().contains("is not a valid Rust identifier"),
+            "{err}"
+        );
     }
 
     /// A raw-identifier column (`from = "r#type"`) names the `Column::Type`

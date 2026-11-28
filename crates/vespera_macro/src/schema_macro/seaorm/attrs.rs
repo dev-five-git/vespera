@@ -195,8 +195,9 @@ pub fn extract_sea_orm_default_expr_sql(attrs: &[syn::Attribute]) -> Option<Stri
 }
 
 /// Whether the column has a database default `omit_default` drops it for:
-/// `default_value`, or SeaORM 2's `default_expr = ".."` (an expression, never
-/// fed to the serde / schema default code; L7, round 18: it was ignored).
+/// `default_value`, or SeaORM 2's `default_expr = ".."`. A SQL-function
+/// `default_expr` also reaches the serde / schema default code as its SQL text
+/// (`extract_sea_orm_default_expr_sql`, round 40; R42-SM4-D1).
 pub fn has_sea_orm_database_default(attrs: &[syn::Attribute]) -> bool {
     extract_sea_orm_default_value(attrs).is_some()
         || entry(&sea_orm_entries(attrs), "default_expr").is_some_and(|entry| entry.value.is_some())

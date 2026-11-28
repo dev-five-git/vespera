@@ -23,6 +23,13 @@ pub fn find_fk_column_from_target_entity(
         extract_belongs_to_from_field, extract_belongs_to_to_raw, extract_relation_enum,
     };
 
+    // A leading `::` names a crate the compiler links (`::entities::user`),
+    // not this crate's module tree: the segments below would drop the empty
+    // root and read `src/entities/..` as if it were local (R42-SM2-L2).
+    if target_schema_path.trim_start().starts_with("::") {
+        return None;
+    }
+
     let layout = crate::schema_macro::crate_layout::crate_layout()?;
     let src_dir = layout.module_dir;
 
@@ -111,6 +118,31 @@ pub struct Model {
             "Should find FK column from mod.rs"
         );
     }
+    /// R42-SM2-L2: `::models::notification::Schema` is another crate's module
+    /// (the `--extern` spelling), so this crate's `src/models/notification.rs`
+    /// that holds the relation is not read for it.
+    #[test]
+    fn extern_spelled_target_is_not_read_from_this_crate() {
+        let temp_dir = TempDir::new().unwrap();
+        let models_dir = temp_dir.path().join("src").join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        std::fs::write(
+            models_dir.join("notification.rs"),
+            "pub struct Model { pub id: i32, pub owner_id: i32, #[sea_orm(belongs_to = \"super::user::Entity\", from = \"owner_id\", to = \"id\", relation_enum = \"Owner\")] pub owner: BelongsTo<super::user::Entity> }",
+        )
+        .unwrap();
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
+        assert_eq!(
+            find_fk_column_from_target_entity("crate::models::notification::Schema", "Owner"),
+            Some("owner_id".to_string())
+        );
+        assert_eq!(
+            find_fk_column_from_target_entity("::models::notification::Schema", "Owner"),
+            None
+        );
+    }
+
     /// R31-SM2-03 (round 31): the relation twin a `cfg_attr(p, cfg(q))` removes
     /// is not the one whose FK column is read, in either declaration order.
     #[rstest::rstest]

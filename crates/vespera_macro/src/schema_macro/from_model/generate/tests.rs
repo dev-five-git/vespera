@@ -198,6 +198,13 @@ const NOTIFICATION_BAD_FROM: &str = "pub struct Model {\n    pub id: i32,\n    #
     with_enum(rel("notifications", "HasMany", quote! { crate::models::notification::Schema }, false), None, None, Some("NonExistentRelation")),
     "schema_type!: cannot load relation field `notifications`: no field of the `Model` behind `crate::models::notification::Schema` has `#[sea_orm(relation_enum = \"NonExistentRelation\", from = \"..\")]`; add it there, or `omit` the field"
 )]
+// R42-SM2-L2: a `::`-rooted relation path is another crate's model; the
+// error says that the source is not read (the spelling is not this crate's).
+#[case::extern_path_relation_not_read(
+    "authored_posts", &[("post.rs", POST_PLAIN)],
+    with_enum(rel("authored_posts", "HasMany", quote! { ::models::post::Schema }, false), Some("NonExistentRelation"), None, None),
+    "schema_type!: cannot load relation field `authored_posts`: no field of the `Model` behind `::models::post::Schema` has `#[sea_orm(relation_enum = \"NonExistentRelation\", from = \"..\")]`; add it there, or `omit` the field (a `::` path names another crate: its source is not read)"
+)]
 #[case::has_many_enum_fk_not_found(
     "authored_posts", &[("post.rs", POST_PLAIN)],
     with_enum(rel("authored_posts", "HasMany", quote! { crate::models::post::Schema }, false), Some("NonExistentRelation"), None, None),

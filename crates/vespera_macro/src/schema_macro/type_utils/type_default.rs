@@ -47,9 +47,14 @@ fn names_ecosystem_type(segments: &[String], source_module: &[String]) -> bool {
             _ => break,
         }
     }
+    // `vespera` re-exports chrono (`vespera::chrono`, R42-SM4-L1); its other
+    // items are not ecosystem types.
     matches!(
-        path.first().map(String::as_str),
-        Some("sea_orm" | "chrono" | "rust_decimal" | "uuid" | "time")
+        path.iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["sea_orm" | "chrono" | "rust_decimal" | "uuid" | "time", ..] | ["vespera", "chrono", ..]
     )
 }
 

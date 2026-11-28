@@ -73,14 +73,14 @@ pub fn replace_last_ident(path: &TokenStream, from: Option<&str>, to: &str) -> T
 }
 
 /// The `Model` path behind a normalized relation `Schema` path: only the final
-/// segment is rewritten (`crate::SchemaDefs::user::Schema` →
-/// `crate::SchemaDefs::user::Model`) — a whole-string `replace` also renamed
-/// module segments starting with `Schema`, so the model lookup missed.
+/// segment is rewritten, and only when it is the generated `Schema` name
+/// (`crate::SchemaDefs::user::Schema` → `crate::SchemaDefs::user::Model`). A
+/// whole-string `replace` also renamed module segments starting with `Schema`,
+/// and a prefix match rewrote any `Schema…` name (`SchemaAuditEntity` became
+/// `ModelAuditEntity`, R42-SM2-L3).
 pub(super) fn model_path_of(schema_path: &str) -> String {
     match schema_path.rsplit_once("::") {
-        Some((module, last)) if last.starts_with("Schema") => {
-            format!("{module}::Model{}", &last["Schema".len()..])
-        }
+        Some((module, "Schema")) => format!("{module}::Model"),
         _ => schema_path.to_owned(),
     }
 }
@@ -120,6 +120,10 @@ mod tests {
     #[case::schema_module("crate::SchemaDefs::user::Schema", "crate::SchemaDefs::user::Model")]
     #[case::custom_name("crate::user::UserSchema", "crate::user::UserSchema")]
     #[case::bare("Schema", "Schema")]
+    #[case::schema_prefixed_entity(
+        "crate::models::audit::SchemaAuditEntity",
+        "crate::models::audit::SchemaAuditEntity"
+    )]
     fn model_path_of_rewrites_only_the_last_segment(#[case] schema: &str, #[case] model: &str) {
         assert_eq!(model_path_of(schema), model);
     }

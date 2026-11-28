@@ -889,6 +889,25 @@ fn reexported_ecosystem_name_keeps_its_default(
     assert_eq!(get_type_default(&ty, &module), expected);
 }
 
+/// R42-SM4-L1: `#[serde(default)]` on `vespera::chrono::DateTime<Utc>` keeps
+/// chrono's epoch default (the root `vespera` was not an ecosystem root, so the
+/// type was refused as "cannot statically determine").
+#[test]
+fn vespera_reexported_chrono_keeps_its_default() {
+    let type_source = "vespera::chrono::DateTime<Utc>";
+    let expected = Some(serde_json::json!("1970-01-01T00:00:00Z"));
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub mod sea;").unwrap();
+    std::fs::write(src.join("sea.rs"), "pub struct Holder;").unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let ty: syn::Type = syn::parse_str(type_source).unwrap();
+    let module = ["crate", "sea"].map(String::from);
+    assert_eq!(get_type_default(&ty, &module), expected);
+}
+
 /// H1 (round 15): a multi-segment type reached through a `::`-rooted import
 /// (`use ::std::collections;` + `collections::HashMap<..>`) is rendered with
 /// the leading `::` (the empty root segment panicked in `segment_ident`).
