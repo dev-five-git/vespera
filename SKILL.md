@@ -454,7 +454,7 @@ Every variable in this table treats a value that is set but empty as unset.
 **Primary Parameters (USE THESE):**
 - `pick = [...]` - Allowlist: include ONLY these fields
 - `omit = [...]` - Denylist: exclude these fields
-- `omit_default` - Auto-omit fields with DB defaults (primary_key, default_value)
+- `omit_default` - Auto-omit fields with DB defaults (primary_key, default_value, default_expr)
 
 **Advanced Parameters (USE SPARINGLY):**
 - `partial` - For PATCH endpoints only
@@ -499,7 +499,7 @@ schema_type!(UserPatch from crate::models::user::Model, partial);
 // Partial updates (specific fields only)
 schema_type!(UserPatch from crate::models::user::Model, partial = ["name", "email"]);
 
-// Auto-omit fields with DB defaults (primary_key, default_value = "...")
+// Auto-omit fields with DB defaults (primary_key, default_value = "...", default_expr = "...")
 schema_type!(CreatePostRequest from crate::models::post::Model, omit_default);
 
 // Combine omit_default with add
