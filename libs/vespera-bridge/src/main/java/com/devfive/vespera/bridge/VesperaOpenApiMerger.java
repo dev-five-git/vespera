@@ -399,7 +399,9 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
      * ({@code [{"bearer": []}]}), not by {@code $ref}: rename those keys in
      * the document-level {@code security} and in every operation's, including
      * the operations of webhooks and of callbacks (a callback is an
-     * expression-to-path-item map, like {@code paths}).
+     * expression-to-path-item map, like {@code paths}), and the reusable
+     * {@code components.pathItems} and {@code components.callbacks} that the
+     * merge copies into the host document.
      */
     private static void renameSecurityRequirements(ObjectNode spec, Map<String, String> renames) {
         if (renames.isEmpty()) {
@@ -408,6 +410,10 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
         renameRequirementKeys(spec.get("security"), renames);
         renameInPathItems(spec.get("paths"), renames);
         renameInPathItems(spec.get("webhooks"), renames);
+        if (spec.get("components") instanceof ObjectNode components) {
+            renameInPathItems(components.get("pathItems"), renames);
+            renameInCallbacks(components.get("callbacks"), renames);
+        }
     }
 
     /** {@link #renameSecurityRequirements} for the path items of a {@code paths} / {@code webhooks} / callback map. */
@@ -420,13 +426,18 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
                 for (String method : OPERATIONS) {
                     if (pathItem.get(method) instanceof ObjectNode operation) {
                         renameRequirementKeys(operation.get("security"), renames);
-                        if (operation.get("callbacks") instanceof ObjectNode callbacks) {
-                            for (JsonNode callback : callbacks) {
-                                renameInPathItems(callback, renames);
-                            }
-                        }
+                        renameInCallbacks(operation.get("callbacks"), renames);
                     }
                 }
+            }
+        }
+    }
+
+    /** {@link #renameSecurityRequirements} for a map of named callbacks (each one an expression-to-path-item map). */
+    private static void renameInCallbacks(JsonNode callbacks, Map<String, String> renames) {
+        if (callbacks instanceof ObjectNode named) {
+            for (JsonNode callback : named) {
+                renameInPathItems(callback, renames);
             }
         }
     }

@@ -1,15 +1,18 @@
 package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.IOException;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.ServerWebExchangeDecorator;
 import reactor.core.Exceptions;
@@ -34,13 +37,53 @@ class ReactiveFormBodySupportTest {
         };
     }
 
+    /** A form exchange whose cached form read completes empty: nothing was cached for the drained body. */
+    private static ServerWebExchange formReadIsEmpty() {
+        ServerWebExchange base = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/form")
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .body("a=1&b=2"));
+        return new ServerWebExchangeDecorator(base) {
+            @Override
+            public Mono<MultiValueMap<String, String>> getFormData() {
+                return Mono.empty();
+            }
+        };
+    }
+
+    /**
+     * reactor-netty refuses the second read of a body no form parse cached: the
+     * body was consumed server-side, so the proxy answers 500, never the empty
+     * body (which Rust would read as a complete request) and never a 400.
+     */
     @Test
-    void aDrainedBodyWithNoCachedFormIsForwardedAsItCame() {
-        // reactor-netty refuses the second read of a body no form parse cached.
+    void aDrainedBodyWithNoCachedFormAnswers500() {
         ServerWebExchange exchange =
                 formReadFails(new IllegalStateException("Rejecting additional inbound receiver"));
 
-        byte[] body = ReactiveFormBodySupport.recoverConsumedBody(exchange, DRAINED, 7).block();
+        ResponseStatusException thrown = assertThrows(ResponseStatusException.class,
+                () -> ReactiveFormBodySupport.recoverConsumedBody(exchange, DRAINED, 7).block());
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, thrown.getStatusCode());
+        assertEquals(ReactiveFormBodySupport.FORM_CONSUMED_MSG, thrown.getReason());
+    }
+
+    /** Spring's cached form read completing empty for a short body: the same server-side consumption. */
+    @Test
+    void aShortFormBodyWithNothingCachedAnswers500() {
+        ServerWebExchange exchange = formReadIsEmpty();
+
+        ResponseStatusException thrown = assertThrows(ResponseStatusException.class,
+                () -> ReactiveFormBodySupport.recoverConsumedBody(exchange, DRAINED, 7).block());
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, thrown.getStatusCode());
+        assertEquals(ReactiveFormBodySupport.FORM_CONSUMED_MSG, thrown.getReason());
+    }
+
+    /** An unknown length (-1) that came back empty is a legitimate empty body: forwarded as it came. */
+    @Test
+    void anEmptyBodyOfUnknownLengthIsForwardedAsItCame() {
+        byte[] body = ReactiveFormBodySupport.recoverConsumedBody(formReadIsEmpty(), DRAINED, -1).block();
 
         assertArrayEquals(DRAINED, body);
     }

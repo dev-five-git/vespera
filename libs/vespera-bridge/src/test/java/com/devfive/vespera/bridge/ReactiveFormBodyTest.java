@@ -173,6 +173,21 @@ class ReactiveFormBodyTest {
         assertEquals("a=1&b=x%20y&a=2", transport.lastBody());
     }
 
+    /**
+     * A filter drains a form body without caching its form data, so nothing can
+     * rebuild it. The body was consumed server-side: the proxy answers 500 with
+     * a WARN, never a 400 that blames the client's short body, and never
+     * forwards the empty body to Rust.
+     */
+    @Test
+    void formDrainedByAFilterWithoutFormDataAnswers500NotA400() throws Exception {
+        start((exchange, chain) -> exchange.getRequest().getBody().then(chain.filter(exchange)));
+        HttpResponse<String> response = send("application/x-www-form-urlencoded", "a=1&b=2");
+        assertEquals(500, response.statusCode());
+        assertEquals(ReactiveFormBodySupport.FORM_CONSUMED_MSG, response.body());
+        assertEquals(0, transport.requests.size(), "never forwarded to Rust");
+    }
+
     @Test
     void otherBodiesAreNeverRebuilt() throws Exception {
         start(true);

@@ -309,6 +309,31 @@ class VesperaBridgePluginFunctionalTest {
         assertFalse(File(dir, "build/resources/main/native").exists())
     }
 
+    /**
+     * `targets` without a target base used to be planned and then silently dropped (the
+     * prebuilt-only branch returned before checking them): the jar shipped without the
+     * cross-built library. The build now fails with the reason.
+     */
+    @Test
+    fun targetsWithoutATargetBaseFailTheBuildInsteadOfBeingDropped() {
+        write("prebuilt/native/$extraPlatform/libmy_app.dylib", "prebuilt")
+        setUpWithoutCargoRoot(
+            """
+                extraNativeLibs.set(layout.projectDirectory.dir("prebuilt"))
+                targets.put("$crossPlatform", "$crossTriple")
+            """.trimIndent(),
+        )
+
+        val result = run("processResources").buildAndFail()
+
+        assertTrue(
+            result.output.contains("vespera.targets needs vespera.cargoRoot or vespera.targetDir"),
+            result.output,
+        )
+        assertTrue(result.output.contains(crossPlatform), result.output)
+        assertFalse(File(dir, "build/resources/main/native").exists())
+    }
+
     /** A prebuilt-only consumer: extraNativeLibs and no crateName, so no build is planned at all. */
     @Test
     fun prebuiltOnlyWithoutCrateNameBundlesTheExtraLibraries() {

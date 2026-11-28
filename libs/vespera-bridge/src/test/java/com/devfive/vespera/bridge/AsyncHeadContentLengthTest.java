@@ -86,4 +86,13 @@ class AsyncHeadContentLengthTest {
         assertEquals("5", response.getHeader("Content-Length"));
         assertEquals("hello", response.getContentAsString());
     }
+
+    /** A GET whose Rust body is really empty keeps the declared {@code Content-Length: 0} (the javadoc's promise). */
+    @Test
+    void getWithAnEmptyRustBodySendsContentLengthZero() throws Exception {
+        MockHttpServletResponse response = call(get("/doc/bare"));
+        assertEquals(200, response.getStatus());
+        assertEquals("0", response.getHeader("Content-Length"));
+        assertEquals("", response.getContentAsString());
+    }
 }

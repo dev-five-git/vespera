@@ -13,6 +13,22 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
 
+/**
+ * Request and response header filtering for the proxy.
+ *
+ * <p>Trust model for {@code X-Forwarded-For}, {@code X-Forwarded-Host},
+ * {@code X-Forwarded-Proto} and {@code X-Forwarded-Port}: they are ordinary
+ * request headers and are forwarded to Rust verbatim, so they are
+ * <em>client-controlled</em> unless the host strips or rewrites them before the
+ * proxy runs (for example Spring's {@code ForwardedHeaderFilter} or
+ * {@code server.forward-headers-strategy}, or the load balancer). The proxy's
+ * own, trusted view of the caller is the {@code remote_addr} and {@code scheme}
+ * wire fields, which come from the servlet / reactive request, not from these
+ * headers. Rust handlers should therefore take the client address from
+ * {@code ConnectInfo<SocketAddr>} and the scheme from {@code Extension<http::uri::Scheme>}, and treat
+ * the forwarded headers as hints only. This class does not change behaviour
+ * based on them.
+ */
 final class HeaderPolicy {
     private HeaderPolicy() {}
 

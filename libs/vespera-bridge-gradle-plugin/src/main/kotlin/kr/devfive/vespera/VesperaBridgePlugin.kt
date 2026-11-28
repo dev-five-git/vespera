@@ -131,12 +131,14 @@ class VesperaBridgePlugin : Plugin<Project> {
                     val crateP = ext.crateName
                     val profileP = ext.cargoProfile
                     val extraP = ext.extraNativeLibs
+                    val targetsP = ext.targets
                     val expectedP = expectedLibraries(targetBase, plannedBuilds)
                     t.doLast(object : org.gradle.api.Action<Task> {
                         override fun execute(@Suppress("UNUSED_PARAMETER") task: Task) {
                             val base = baseP.orNull
                             val crate = crateP.orNull
                             val profile = profileP.get()
+                            requireTargetBase(base, targetsP.get())
                             // Prebuilt-only jar: extraNativeLibs without cargoRoot /
                             // targetDir bundles just those libraries, no local build.
                             val prebuiltDir = if (base == null) extraP.orNull?.asFile else null
@@ -291,6 +293,19 @@ class VesperaBridgePlugin : Plugin<Project> {
                 "Neither vespera.cargoRoot nor vespera.targetDir is set: bundleNativeLib cannot " +
                     "locate the '$crate' cdylib. Set one of them, or vespera.bundleNative = false " +
                     "when the library comes from per-platform native jars."
+            }
+        }
+
+        /**
+         * `vespera.targets` are planned from the target base, so without one
+         * (`cargoRoot` / `targetDir`) they would be neither verified nor bundled:
+         * the jar would silently lack those libraries. Fail instead.
+         */
+        fun requireTargetBase(base: File?, targets: Map<String, String>) {
+            require(base != null || targets.isEmpty()) {
+                "vespera.targets needs vespera.cargoRoot or vespera.targetDir: the cross-built " +
+                    "libraries (${targets.keys.sorted().joinToString()}) cannot be located, so they " +
+                    "would be silently left out of the jar. Set one of them, or remove vespera.targets."
             }
         }
 
