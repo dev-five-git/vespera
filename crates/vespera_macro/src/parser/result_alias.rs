@@ -410,8 +410,9 @@ fn find_alias<'a>(
         if let Some((original, parent)) =
             renamed_import(items, name).filter(|_| import_kind(items, name) == Some(Import::Local))
         {
-            return parent
-                .and_then(|parent| find_alias(&original, Some(&parent), Some(scope), src_dir));
+            // `use self::ApiResult as Api;` has no qualifier (`self` names this
+            // module): the original is looked up here like `ApiResult` itself.
+            return find_alias(&original, parent.as_ref(), Some(scope), src_dir);
         }
         match import_kind(items, name) {
             // `use axum::response::Result;` — the name is another crate's

@@ -339,3 +339,22 @@ fn self_reference_through_a_wrapper_refers_to_its_component() {
     let keys: Vec<&String> = materialized.keys().collect();
     assert!(!keys.iter().any(|key| key.as_str() == "Tree_T"), "{keys:?}");
 }
+
+/// Round 43: a type parameter's default that names a const parameter
+/// (`T = [u8; N]`) takes that const's argument too, so `P<3>` pins the
+/// defaulted array to three elements.
+#[test]
+fn defaulted_type_naming_a_const_takes_the_const_argument() {
+    let known: HashSet<String> = ["P"].into_iter().map(String::from).collect();
+    let defs = HashMap::from([(
+        "P".to_string(),
+        "struct P<const N: usize, T = [u8; N]> { data: T }".to_string(),
+    )]);
+    let schema = inline_schema("P<3>", &known, &defs);
+    let properties = schema.properties.expect("the struct's fields");
+    let SchemaRef::Inline(data) = &properties["data"] else {
+        panic!("the array is inline");
+    };
+    assert_eq!(data.min_items, Some(3));
+    assert_eq!(data.max_items, Some(3));
+}

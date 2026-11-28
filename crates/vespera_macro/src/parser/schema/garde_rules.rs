@@ -44,6 +44,7 @@ use syn::{Attribute, Expr, ExprLit, ExprUnary, Lit, Type, meta::ParseNestedMeta}
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 use super::schema_attrs::{SchemaConstraints, expr_to_f64};
+use crate::parser::type_groups::strip_type_groups;
 use crate::schema_macro::type_utils::{first_generic_type_arg, last_path_segment, option_inner};
 
 /// `pattern` documenting garde's `ascii` rule.
@@ -428,6 +429,9 @@ fn tighten<T: Copy + PartialOrd>(
 /// the elements of a `Vec` / array / `Box<[T]>` / `&[T]` (`true`) — garde's
 /// `Inner` impls.
 fn inner_target(ty: &Type) -> Option<(&Type, bool)> {
+    // A `$t:ty` fragment or `(T)` names the same type: look through it, as the
+    // schema builder does.
+    let ty = strip_type_groups(ty);
     if let Some(inner) = option_inner(ty) {
         return Some((inner, false));
     }

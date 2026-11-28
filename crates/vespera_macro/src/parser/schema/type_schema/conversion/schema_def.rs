@@ -261,7 +261,9 @@ impl SchemaDef {
 
     /// Apply `rewrite` to every field type and to every type the container,
     /// variant and field attributes name (`value_type`, `into`, `from`,
-    /// `try_from`), in the order they are written.
+    /// `try_from`). The field types are rewritten first; then the attributes
+    /// are rewritten container first, then every variant's, then every
+    /// field's, not in source order.
     fn rewrite_types(&mut self, rewrite: &dyn Fn(&Type) -> Type) {
         let mut attrs: Vec<&mut Vec<syn::Attribute>> = Vec::new();
         let mut fields: Vec<&mut syn::Field> = Vec::new();
@@ -300,12 +302,16 @@ impl SchemaDef {
         if consts.is_empty() {
             return;
         }
-        self.rewrite_types(&|ty| {
-            let mut ty = ty.clone();
-            syn::visit_mut::VisitMut::visit_type_mut(&mut ConstArgs { consts }, &mut ty);
-            ty
-        });
+        self.rewrite_types(&|ty| substitute_const_type(ty, consts));
     }
+}
+
+/// `ty` with the const parameters `consts` replaced by their argument
+/// expressions (see [`SchemaDef::substitute_consts`]).
+pub(super) fn substitute_const_type(ty: &Type, consts: &[(String, syn::Expr)]) -> Type {
+    let mut ty = ty.clone();
+    syn::visit_mut::VisitMut::visit_type_mut(&mut ConstArgs { consts }, &mut ty);
+    ty
 }
 
 /// `tokens` of an attribute list with `rewrite` applied to the type after
