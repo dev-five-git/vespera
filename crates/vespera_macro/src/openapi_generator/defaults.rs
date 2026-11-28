@@ -336,6 +336,10 @@ pub(super) fn extract_schema_default_attr(attrs: &[syn::Attribute]) -> Option<St
 /// survives (a leading-zero id `"00123"` must NOT normalise to `"123"`). A
 /// `$ref` or an allOf wrapper (a doc-commented field) does not record its wire
 /// type here, so see [`untyped_default_value`].
+///
+/// An integer-typed property takes the literal as an integer when it denotes
+/// one exactly (`+5` → `5`, `1e3` → `1000`, `5.0` → `5`); a literal that does
+/// not (`1.5`, `1e-3`, past 64-bit range) keeps the general parse.
 fn schema_default_value(
     property: Option<&vespera_core::schema::SchemaRef>,
     literal: String,
@@ -349,8 +353,54 @@ fn schema_default_value(
         Some(SchemaRef::Inline(schema)) if schema.schema_type.is_none() => {
             untyped_default_value(literal)
         }
+        Some(SchemaRef::Inline(schema)) if schema.schema_type == Some(SchemaType::Integer) => {
+            exact_integer_literal(&literal).map_or_else(
+                || parse_default_string_to_json_value(&literal),
+                serde_json::Value::Number,
+            )
+        }
         _ => parse_default_string_to_json_value(&literal),
     }
+}
+
+/// The integer a decimal literal denotes exactly, as a JSON number: an optional
+/// sign, digits with an optional fraction and an optional `e` / `E` exponent
+/// (`+5`, `1e3`, `5.0`, `-0.00`). `None` when the value is not a whole number
+/// or does not fit `i64` / `u64`. The check is decimal, not through `f64`, so
+/// `1.00000000000000000001e3` is not `1000`.
+fn exact_integer_literal(literal: &str) -> Option<serde_json::Number> {
+    let (mantissa, exponent) = match literal.find(['e', 'E']) {
+        Some(at) => (&literal[..at], literal[at + 1..].parse::<i64>().ok()?),
+        None => (literal, 0),
+    };
+    let (negative, unsigned) = match mantissa.as_bytes().first()? {
+        b'-' => (true, &mantissa[1..]),
+        b'+' => (false, &mantissa[1..]),
+        _ => (false, mantissa),
+    };
+    let (int_part, frac_part) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    let digits = format!("{int_part}{frac_part}");
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // The value is `digits * 10^(exponent - frac_len)`; trailing zeros of
+    // `digits` are a power of ten each, so they can absorb a negative one.
+    let significant = digits.trim_end_matches('0');
+    if significant.is_empty() {
+        return Some(0.into());
+    }
+    let trailing_zeros = i64::try_from(digits.len() - significant.len()).ok()?;
+    let shift = exponent - i64::try_from(frac_part.len()).ok()? + trailing_zeros;
+    let magnitude = significant
+        .parse::<u128>()
+        .ok()?
+        .checked_mul(10u128.checked_pow(u32::try_from(shift).ok()?)?)?;
+    let signed = i128::try_from(magnitude).ok()?;
+    let signed = if negative { -signed } else { signed };
+    i64::try_from(signed)
+        .map(serde_json::Number::from)
+        .or_else(|_| u64::try_from(signed).map(serde_json::Number::from))
+        .ok()
 }
 
 /// The JSON value of a literal whose property's wire type is unknown.
@@ -715,3 +765,5 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_integer;

@@ -19,7 +19,7 @@ fn constraints_for(input: &DeriveInput) -> Vec<SchemaConstraints> {
         return f
             .named
             .iter()
-            .map(|fld| try_extract_schema_constraints(&fld.attrs).unwrap_or_default())
+            .map(|fld| try_extract_schema_constraints(&fld.attrs).expect("test attributes parse"))
             .collect();
     }
     Vec::new()

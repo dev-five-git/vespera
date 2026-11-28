@@ -17,6 +17,23 @@
 //! clear error: the file-based router only addresses top-level functions of
 //! a route file (`routes::file::handler`), so such a handler could never be
 //! mounted.
+//!
+//! The rejection is decided from the source shape, so two `cfg` cases are
+//! deliberate, not feature-aware:
+//!
+//! - A handler carrying its own `#[cfg(..)]` inside an inline module is
+//!   rejected even in a build where that `cfg` is off (a `#[cfg(feature =
+//!   "beta")] #[route(get)]` handler in `mod v2 { .. }` errors without
+//!   `beta`). The rule does not evaluate features, so it holds in every build
+//!   (`tests_inline_cfg`).
+//! - A route file gated by a module declaration's `#[cfg(..)]` or an inner
+//!   `#![cfg(..)]` takes the slow path, which records only its top-level
+//!   handlers and never runs this check (`collector.rs`, the
+//!   `!module_cfg.is_empty()` branch). An inline module there is skipped, not
+//!   rejected: the gate may compile the whole file out, and rustc never reads
+//!   a compiled-out file. The fast path (a `#[route]` storage entry for the
+//!   file) still rejects a stored handler whose inline module is recorded
+//!   (`stored_routes_inline_module`).
 
 use std::path::Path;
 
