@@ -264,6 +264,8 @@ fn serde_json_map_documents_its_value_type() {
         "vespera::serde_json::Map<String, u8>",
         "serde_json::map::Map<String, u8>",
         "serde_json::Map<String, (u8)>",
+        // A lifetime argument before the key and value is skipped, not read as the value.
+        "serde_json::Map<'static, String, u8>",
     ] {
         let ty: Type = syn::parse_str(src).unwrap();
         let schema = serde_json::to_value(parse_type_to_schema_ref(&ty, &known, &defs)).unwrap();
