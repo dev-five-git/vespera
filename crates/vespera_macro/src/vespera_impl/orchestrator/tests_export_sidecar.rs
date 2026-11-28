@@ -40,6 +40,7 @@ fn export_texts(routes: Vec<RouteMetadata>) -> (String, String) {
         crons: Vec::new(),
         cfg_routes: Vec::new(),
         test_only_routes: Vec::new(),
+        documented_twins: Vec::new(),
     };
     namespace_and_serialize_export_openapi(&mut openapi, &metadata, "/api")
         .expect("export texts serialize")

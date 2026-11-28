@@ -245,9 +245,17 @@ fn transparent_struct_field_keeps_the_parent_path() {
     "#[schema(minimum = 9007199254740993)] f: i64",
     "Some (9007199254740992i64)"
 )]
-#[case::negative_min_keeps_exact(
+#[case::negative_min_is_the_documented_outward_bound(
     "#[schema(minimum = -9007199254740993)] f: i64",
-    "Some (- 9007199254740993i64)"
+    "Some (- 9007199254740994i64)"
+)]
+#[case::max_past_2_pow_53_is_the_documented_outward_bound(
+    "#[schema(maximum = 9007199254740993)] f: i64",
+    "Some (9007199254740994i64)"
+)]
+#[case::min_past_2_pow_53_is_the_documented_outward_bound(
+    "#[schema(minimum = 9007199254740995)] f: i64",
+    "Some (9007199254740994i64)"
 )]
 #[case::negative_max_loosens(
     "#[schema(maximum = -9007199254740993)] f: i64",

@@ -9,17 +9,22 @@
 //!    (`use child::ChildApp as Admin;` → `merge = [Admin]` is `child::ChildApp`),
 //!    so the export name — not the alias — selects the file;
 //! 2. a first segment the compiler was given as an extern crate
-//!    (`--extern <name>=`, see `extern_crate_names`) names the crate that
-//!    exported the app. Any other first segment (`crate`, `self`, `super`, a
-//!    local module, a local item) is the current crate's own path: its own
-//!    export is taken first, so a local module never reads another crate's
-//!    directory;
+//!    (`--extern <name>=`, see `extern_crates`) names the crate that exported
+//!    the app: the crate its rlib file names (`libchild-<hash>.rlib` is
+//!    `child`, so a renamed dependency `--extern dep=…/libchild-<hash>.rlib`
+//!    is `child`), else the extern name itself. That crate's export is taken,
+//!    and when it has none the path is still that crate's (missing, reported
+//!    when the spec is read), never another crate's. Any other first segment
+//!    (`crate`, `self`, `super`, a local module, a local item) is the current
+//!    crate's own path: its own export is taken first, so a local module never
+//!    reads another crate's directory;
 //! 3. otherwise the only other crate that exported that app name is taken: a
-//!    renamed dependency, or a local path that re-exports an extern crate's app
-//!    (`pub use child::ChildApp;`, then `routes::ChildApp` or `crate::ChildApp`).
-//!    Several other exporters, or none, leave the current crate, whose missing
-//!    file the key check in step 4 reports;
-//! 4. every resolved file is checked against the merged type (below).
+//!    local path that re-exports an extern crate's app (`pub use child::ChildApp;`,
+//!    then `routes::ChildApp` or `crate::ChildApp`). Several other exporters, or
+//!    none, leave the current crate, whose missing file the merge reports when
+//!    it reads the spec (`openapi_io`);
+//! 4. every resolved file that exists is checked against the merged type
+//!    (below); a missing one is not checked here (see step 3).
 //!
 //! Every resolved file carries the key `<crate>/<App>`; the parent asserts at
 //! compile time that the merged type's `__VESPERA_EXPORT_KEY` matches, so a
@@ -284,15 +289,22 @@ pub(super) fn resolve_export(
         .filter(|_| segments.len() > 1)
         .filter(|first| !matches!(first.as_str(), "crate" | "self" | "super"))
         .cloned();
-    let externs = extern_crate_names();
-    let is_extern = named.as_ref().is_some_and(|first| externs.contains(first));
-    if is_extern && let Some(resolved) = named.and_then(|krate| export_in(vespera_dir, krate, &app))
-    {
-        return Some(resolved);
+    // A path naming an extern crate is that crate's app, whether or not it
+    // exported it: another crate's export is never the answer (`child::ChildApp`
+    // must not read another crate's `ChildApp`). A missing file is reported
+    // when the merge reads it.
+    if let Some(krate) = named.and_then(|first| extern_crates().get(&first).cloned()) {
+        return Some(
+            export_in(vespera_dir, krate.clone(), &app).unwrap_or_else(|| ResolvedExport {
+                spec_file: export_spec_path(vespera_dir, &krate, &app),
+                krate,
+                app,
+            }),
+        );
     }
     // The current crate's own export: a bare name, `crate::` / `self::` /
     // `super::`, or a local path (a first segment that is not an extern crate).
-    if !is_extern && let Some(resolved) = export_in(vespera_dir, current.clone(), &app) {
+    if let Some(resolved) = export_in(vespera_dir, current.clone(), &app) {
         return Some(resolved);
     }
     // Otherwise the only other crate that exported the app (see step 3 above).
@@ -315,21 +327,36 @@ pub(super) fn resolve_export(
 /// `noprelude:name=path` form, or a bare `name`), so the first segment of a
 /// merge path can be told apart from a local module of the same name. Read
 /// from [`crate::env_access::compiler_args`]; empty when no extern is passed.
-fn extern_crate_names() -> HashSet<String> {
+fn extern_crates() -> HashMap<String, String> {
     let args = crate::env_access::compiler_args();
     let mut rest = args.iter();
-    let mut names = HashSet::new();
+    let mut crates = HashMap::new();
     while let Some(arg) = rest.next() {
         let spec = match arg.as_str() {
             "--extern" => rest.next().map(String::as_str),
             other => other.strip_prefix("--extern="),
         };
         if let Some(spec) = spec {
-            let name = spec.split_once('=').map_or(spec, |(name, _)| name);
-            names.insert(name.strip_prefix("noprelude:").unwrap_or(name).to_owned());
+            let (name, path) = spec
+                .split_once('=')
+                .map_or((spec, None), |(name, path)| (name, Some(path)));
+            let name = name.strip_prefix("noprelude:").unwrap_or(name);
+            let krate = path.and_then(rlib_crate).unwrap_or_else(|| name.to_owned());
+            crates.insert(name.to_owned(), krate);
         }
     }
-    names
+    crates
+}
+
+/// The crate an rlib (or rmeta) file names: cargo writes `lib<crate>-<hash>`
+/// (`lib<crate>` for a plain `rustc` build). `None` for any other file name.
+fn rlib_crate(path: &str) -> Option<String> {
+    let file = Path::new(path).file_name()?.to_str()?;
+    let stem = file
+        .strip_suffix(".rlib")
+        .or_else(|| file.strip_suffix(".rmeta"))?
+        .strip_prefix("lib")?;
+    Some(stem.split('-').next()?.to_owned())
 }
 
 /// Every crate directory under [`export_root`] holding `app`'s spec, sorted.
@@ -528,7 +555,7 @@ child=/t/libchild.rlib
 --extern
 other=/t/libother.rlib
 --extern
-dep=/t/libdep.rlib",
+dep=/t/librenamed_pkg-0a1b2c3d.rlib",
         );
         let dir = temp.path();
         publish(dir, "child", "ChildApp");
@@ -576,10 +603,11 @@ dep=/t/libdep.rlib",
             resolve("dep::OnlyApp", "", dir),
             Some(pair("renamed_pkg", "OnlyApp"))
         );
-        // Ambiguous / missing: the current crate's (absent) file is reported.
+        // A renamed dependency without that export: its own (absent) file is
+        // reported, never another crate's export of the app.
         assert_eq!(
             resolve("dep::ChildApp", "", dir),
-            Some(pair("parent", "ChildApp"))
+            Some(pair("renamed_pkg", "ChildApp"))
         );
         // ... and the ambiguity itself is a compile error naming the
         // candidates; a found or unique export is not.
@@ -605,7 +633,7 @@ dep=/t/libdep.rlib",
         );
         assert_eq!(
             resolve("dep::Missing", "", dir),
-            Some(pair("parent", "Missing"))
+            Some(pair("renamed_pkg", "Missing"))
         );
     }
 
@@ -620,7 +648,7 @@ dep=/t/libdep.rlib",
         let _args = crate::env_access::test_env::set_var(
             crate::env_access::COMPILER_ARGS_KEY,
             "--extern
-dep=/t/libdep.rlib",
+dep=/t/libchild-0a1b2c3d.rlib",
         );
         let dir = temp.path();
         publish(dir, "parent", "SharedApp");
@@ -633,9 +661,14 @@ dep=/t/libdep.rlib",
             resolve("SharedApp", "", dir),
             Some(pair("parent", "SharedApp"))
         );
+        // The extern name is its crate whatever else exports the app.
         publish(dir, "other", "SharedApp");
         assert_eq!(
             resolve("dep::SharedApp", "", dir),
+            Some(pair("child", "SharedApp"))
+        );
+        assert_eq!(
+            resolve("SharedApp", "", dir),
             Some(pair("parent", "SharedApp"))
         );
     }
@@ -651,9 +684,7 @@ dep=/t/libdep.rlib",
         let _args = crate::env_access::test_env::set_var(
             crate::env_access::COMPILER_ARGS_KEY,
             "--extern
-dep=/t/libdep.rlib
---extern
-child=/t/libchild.rlib",
+dep=/t/libchild-0a1b2c3d.rlib",
         );
         let dir = temp.path();
         publish(dir, "parent", "SharedApp");
@@ -703,6 +734,58 @@ child=/t/libchild.rlib",
         );
     }
 
+    /// A path whose first segment is an extern crate names that crate's app
+    /// even when that crate did not export it: another crate's export of the
+    /// same name is never taken (round-45 R45-MR5-L3). The lookup yields the
+    /// named crate's (missing) spec, which the merge reports when it reads it.
+    #[test]
+    fn extern_path_without_its_export_does_not_fall_back_to_another_crate() {
+        let temp = TempDir::new().unwrap();
+        let _crate = crate::env_access::test_env::set_var("CARGO_CRATE_NAME", "parent");
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            "--extern
+child=/t/libchild.rlib",
+        );
+        let dir = temp.path();
+        publish(dir, "other", "ChildApp");
+        assert_eq!(
+            resolve("child::ChildApp", "", dir),
+            Some(pair("child", "ChildApp"))
+        );
+        assert_eq!(
+            resolve("child::Missing", "", dir),
+            Some(pair("child", "Missing"))
+        );
+    }
+
+    /// The crate an extern name stands for: its rlib's crate (a renamed
+    /// dependency is the crate it was built from), else the name itself.
+    #[test]
+    fn extern_names_map_to_the_crate_their_rlib_names() {
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            "rustc
+--extern
+dep=/t/libchild-0a1b2c3d.rlib
+--extern=other=/t/libother.rmeta
+--extern
+noprelude:plain=/t/plain.rlib
+--extern
+bare",
+        );
+        let expected: HashMap<String, String> = [
+            ("dep", "child"),
+            ("other", "other"),
+            ("plain", "plain"),
+            ("bare", "bare"),
+        ]
+        .into_iter()
+        .map(|(name, krate)| (name.to_owned(), krate.to_owned()))
+        .collect();
+        assert_eq!(extern_crates(), expected);
+    }
+
     /// `--extern` names come from the compiler arguments in every form: `name=path`,
     /// `--extern=name=path`, the `noprelude:` modifier and a bare name.
     #[test]
@@ -724,7 +807,10 @@ bare
             .into_iter()
             .map(str::to_owned)
             .collect();
-        assert_eq!(extern_crate_names(), expected);
+        assert_eq!(
+            extern_crates().into_keys().collect::<HashSet<String>>(),
+            expected
+        );
     }
 
     /// Found exports get a key assertion; missing ones (reported elsewhere)

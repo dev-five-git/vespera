@@ -99,6 +99,7 @@ fn stale_storage_entries_of_renamed_handlers_are_ignored() {
     fs::write(&file, "#[vespera::route(get)] pub async fn list_v2() {}\n").unwrap();
     crate::schema_macro::file_cache::bump_epoch();
     let stored = |name: &str| crate::route_impl::StoredRouteInfo {
+        own_test_only: false,
         fn_name: name.to_string(),
         method: Some("get".to_string()),
         file_path: Some(file.display().to_string()),

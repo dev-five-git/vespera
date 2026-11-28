@@ -20,7 +20,7 @@ fn name_value_route_method_is_recorded_like_the_list_form() {
     let methods: Vec<&str> = defs.iter().map(|def| def.method.as_str()).collect();
     assert_eq!(methods, ["post", "post", "patch", "get", "get"]);
     let signature = defs[1].signature.clone();
-    assert!(!route_test_only(&defs, "create", "post", &signature));
+    assert!(!route_test_only(&defs, "create", "post", &signature, false));
 }
 
 /// `trace` is a `#[route]` method like the others (round-32 macrorest-0 R32-M1):

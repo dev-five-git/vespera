@@ -75,6 +75,7 @@ fn test_register_route_replaces_same_file_and_function() {
     let file_path = Some("/tmp/vespera/routes/replaced.rs".to_string());
     let fn_name = "__test_replace_route".to_string();
     let base = StoredRouteInfo {
+        own_test_only: false,
         fn_name: fn_name.clone(),
         method: Some("get".to_string()),
         custom_path: Some("/before".to_string()),
@@ -96,6 +97,7 @@ fn test_register_route_replaces_same_file_and_function() {
     };
     register_route(base);
     register_route(StoredRouteInfo {
+        own_test_only: false,
         method: Some("post".to_string()),
         custom_path: Some("/after".to_string()),
         file_path,
@@ -127,6 +129,7 @@ fn test_register_route_keys_by_inline_module() {
     let fn_name = "__test_scoped_route".to_string();
     for scope in ["", "v2"] {
         register_route(StoredRouteInfo {
+            own_test_only: false,
             fn_name: fn_name.clone(),
             file_path: file_path.clone(),
             inline_module: Some(scope.to_string()),

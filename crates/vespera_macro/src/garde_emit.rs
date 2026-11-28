@@ -348,14 +348,12 @@ fn emit_rule_blocks(
         });
     }
 
-    // The runtime bound is the literal's nearest `f64`: the constraint copy is
-    // rounded outward past 2^53 for the document only (see `schema_attrs`).
-    let runtime_min = c
-        .minimum
-        .map(|v| exact.minimum.map_or(v, ExactInt::nearest_f64));
-    let runtime_max = c
-        .maximum
-        .map(|v| exact.maximum.map_or(v, ExactInt::nearest_f64));
+    // The runtime bound is the documented one: past 2^53 the constraint copy
+    // is rounded outward (see `schema_attrs::outward_bound`), and `loosen`
+    // below keeps the exact literal only where it is looser, so the validator
+    // accepts exactly the advertised range.
+    let runtime_min = c.minimum;
+    let runtime_max = c.maximum;
     // ── Numeric range (minimum / maximum → range::apply) ──────────────
     if runtime_min.is_some() || runtime_max.is_some() {
         let bounds = numeric_some(runtime_min, exact.minimum, Bound::Min, numeric_kind)
@@ -578,14 +576,6 @@ impl std::fmt::Display for ExactInt {
 
 #[cfg(feature = "validation")]
 impl ExactInt {
-    /// The `f64` nearest this literal (round to nearest, ties to even), the
-    /// bound the runtime validator enforces.
-    #[allow(clippy::cast_precision_loss)]
-    fn nearest_f64(self) -> f64 {
-        let magnitude = self.magnitude as f64;
-        if self.negative { -magnitude } else { magnitude }
-    }
-
     /// `5` / `-5` (an integer literal, optionally negated); `None` for
     /// floats and anything else.
     fn from_expr(expr: &syn::Expr) -> Option<Self> {

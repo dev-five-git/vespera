@@ -77,29 +77,36 @@ fn lit_value(lit: Option<&syn::LitStr>) -> Option<String> {
 }
 
 /// Convert a parsed [`RouteArgs`] into the simpler [`RouteInfo`] used by
-/// the collector / OpenAPI emitter.  Factored out so the inline conversion
-/// gets its own basic block and shows up cleanly in coverage reports.
-fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
+/// the collector / OpenAPI emitter. The slow path runs the same strict
+/// validators `#[route]` expansion runs (`route_impl`): an argument the
+/// expansion rejects makes the route `None`, so the route is not documented.
+/// Documenting it with that argument dropped would write a spec weaker than
+/// the source (the expansion's compile error is the diagnostic).
+fn build_route_info_from_args(route_args: &RouteArgs) -> Option<RouteInfo> {
     let method = route_args
         .method
         .as_ref()
         .map_or_else(|| "get".to_string(), syn::Ident::to_string);
     let path = lit_value(route_args.path.as_ref());
 
-    let error_status = route_args
-        .error_status
-        .as_ref()
-        .and_then(extract_status_codes);
-    let tags = route_args.tags.as_ref().and_then(extract_non_empty_strings);
-    let typed_responses = route_args
-        .responses
-        .as_ref()
-        .and_then(extract_typed_responses);
-    // `#[route]` already rejected a malformed array at its own expansion (the
-    // fast path reports it), so a build that compiled never reaches this drop.
-    let security = route_args.security.as_ref().and_then(|arr| {
-        crate::security::parse_security_requirements(arr, "#[route] `security`").ok()
-    });
+    let error_status = match route_args.error_status.as_ref() {
+        Some(arr) => crate::route_impl::extract_error_status_codes(arr).ok()?,
+        None => None,
+    };
+    let tags = match route_args.tags.as_ref() {
+        Some(arr) => crate::route_impl::extract_tag_strings(arr).ok()?,
+        None => None,
+    };
+    let typed_responses = match route_args.responses.as_ref() {
+        Some(arr) => crate::route_impl::extract_typed_responses(arr).ok()?,
+        None => None,
+    };
+    let security = match route_args.security.as_ref() {
+        Some(arr) => {
+            Some(crate::security::parse_security_requirements(arr, "#[route] `security`").ok()?)
+        }
+        None => None,
+    };
     let headers = route_args.headers.clone().unwrap_or_default();
 
     let description = lit_value(route_args.description.as_ref());
@@ -115,7 +122,7 @@ fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
         .as_ref()
         .map(parse_example_string);
 
-    RouteInfo {
+    Some(RouteInfo {
         method,
         path,
         success_status: route_args.success_status,
@@ -130,63 +137,12 @@ fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
         response_example,
         deprecated: route_args.deprecated,
         description,
-    }
+    })
 }
 
 fn parse_example_string(lit: &syn::LitStr) -> serde_json::Value {
     let value = lit.value();
     serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value))
-}
-
-fn extract_status_codes(array: &syn::ExprArray) -> Option<Vec<u16>> {
-    let status_codes: Vec<u16> = array
-        .elems
-        .iter()
-        .filter_map(|elem| {
-            if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Int(lit_int),
-                ..
-            }) = elem
-            {
-                lit_int.base10_parse::<u16>().ok()
-            } else {
-                None
-            }
-        })
-        .collect();
-    (!status_codes.is_empty()).then_some(status_codes)
-}
-
-fn extract_strings(array: &syn::ExprArray) -> Vec<String> {
-    array
-        .elems
-        .iter()
-        .filter_map(|elem| {
-            if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(lit_str),
-                ..
-            }) = elem
-            {
-                Some(lit_str.value())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn extract_non_empty_strings(array: &syn::ExprArray) -> Option<Vec<String>> {
-    let values = extract_strings(array);
-    (!values.is_empty()).then_some(values)
-}
-
-fn extract_typed_responses(array: &syn::ExprArray) -> Option<Vec<(u16, String)>> {
-    let responses: Vec<(u16, String)> = array
-        .elems
-        .iter()
-        .filter_map(extract_typed_response)
-        .collect();
-    (!responses.is_empty()).then_some(responses)
 }
 
 /// The `responses = [(404, errors::NotFound)]` type as written
@@ -202,31 +158,6 @@ pub fn response_type_path(path: &syn::Path) -> Option<String> {
         .map(|segment| segment.ident.to_string())
         .collect();
     (!segments.is_empty()).then(|| segments.join("::"))
-}
-
-fn extract_typed_response(elem: &syn::Expr) -> Option<(u16, String)> {
-    let syn::Expr::Tuple(tuple) = elem else {
-        return None;
-    };
-    let status = tuple.elems.first().and_then(|status| {
-        if let syn::Expr::Lit(syn::ExprLit {
-            lit: syn::Lit::Int(lit_int),
-            ..
-        }) = status
-        {
-            lit_int.base10_parse::<u16>().ok()
-        } else {
-            None
-        }
-    })?;
-    let schema_name = tuple.elems.get(1).and_then(|schema| {
-        if let syn::Expr::Path(path) = schema {
-            crate::route::response_type_path(&path.path)
-        } else {
-            None
-        }
-    })?;
-    Some((status, schema_name))
 }
 
 pub fn check_route_by_meta(meta: &syn::Meta) -> bool {
@@ -272,7 +203,7 @@ fn try_extract_from_meta(meta: &syn::Meta) -> Option<RouteInfo> {
     match meta {
         syn::Meta::List(meta_list) => {
             let route_args = meta_list.parse_args::<RouteArgs>().ok()?;
-            Some(build_route_info_from_args(&route_args))
+            build_route_info_from_args(&route_args)
         }
         // `#[route = "patch"]` form.
         syn::Meta::NameValue(meta_nv) => {
@@ -679,59 +610,34 @@ mod tests {
         assert_eq!(parse_example_string(&literal), expected);
     }
 
-    /// Precondition: the fast path (`route_impl`) rejects these inputs with a
-    /// compile error before the collector runs, so this slow-path reader never
-    /// sees a build that gets past expansion. It keeps the lenient shape only
-    /// for the fallback that re-reads a parsed file.
-    #[test]
-    fn status_and_string_extractors_ignore_wrong_expression_kinds() {
-        let statuses: syn::ExprArray = syn::parse_quote!([400, BAD_REQUEST, "404", 70_000]);
-        let strings: syn::ExprArray = syn::parse_quote!(["users", admin, 7]);
-        let no_strings: syn::ExprArray = syn::parse_quote!([admin, 7]);
-
-        assert_eq!(extract_status_codes(&statuses), Some(vec![400]));
-        assert_eq!(extract_strings(&strings), vec!["users".to_string()]);
-        assert_eq!(extract_non_empty_strings(&no_strings), None);
-    }
-
-    #[rstest]
-    #[case::not_a_tuple(quote::quote!(NotFound), None)]
-    #[case::missing_status(quote::quote!(()), None)]
-    #[case::non_integer_status(quote::quote!((NOT_FOUND, ErrorBody)), None)]
-    #[case::out_of_range_status(quote::quote!((70_000, ErrorBody)), None)]
-    #[case::missing_schema(quote::quote!((404,)), None)]
-    #[case::non_path_schema(quote::quote!((404, "ErrorBody")), None)]
-    #[case::qualified_schema(
-        quote::quote!((404, crate::errors::NotFound)),
-        Some((404, "crate::errors::NotFound".to_string()))
-    )]
-    fn typed_response_extracts_only_valid_status_and_schema_pairs(
-        #[case] source: proc_macro2::TokenStream,
-        #[case] expected: Option<(u16, String)>,
-    ) {
-        let expression = syn::parse2::<syn::Expr>(source).expect("valid expression fixture");
-
-        assert_eq!(extract_typed_response(&expression), expected);
-    }
-
-    /// Precondition (as for the status extractors above): `route_impl` already
-    /// rejected every invalid entry at expansion, so the drop-and-continue
-    /// behaviour pinned here only matters for a file parsed without expansion.
-    #[test]
-    fn typed_responses_drop_invalid_entries_and_report_empty_results() {
-        let mixed: syn::ExprArray = syn::parse_quote!([
-            NotATuple,
-            (NOT_FOUND, ErrorBody),
-            (404, "ErrorBody"),
-            (422, crate::errors::ValidationError),
-        ]);
-        let invalid: syn::ExprArray = syn::parse_quote!([NotATuple, (404, "ErrorBody")]);
-
-        assert_eq!(
-            extract_typed_responses(&mixed),
-            Some(vec![(422, "crate::errors::ValidationError".to_string())])
+    /// The slow path (a file parsed without expansion) runs the same strict
+    /// validators as `#[route]` expansion: a route with an argument that
+    /// expansion rejects is not documented at all.
+    #[rstest::rstest]
+    #[case::tag_not_a_string(r#"#[route(get, tags = ["users", admin])] fn t() {}"#)]
+    #[case::error_status_out_of_range(r"#[route(get, error_status = [200])] fn t() {}")]
+    #[case::error_status_not_an_integer(r"#[route(get, error_status = [BAD])] fn t() {}")]
+    #[case::response_not_a_tuple(r"#[route(get, responses = [NotFound])] fn t() {}")]
+    #[case::response_status_repeated(r"#[route(get, responses = [(404, A), (404, B)])] fn t() {}")]
+    #[case::security_not_a_scheme(r"#[route(get, security = [42])] fn t() {}")]
+    fn slow_path_skips_a_route_the_expansion_rejects(#[case] code: &str) {
+        assert!(
+            extract_route_info(&parse_attrs_from_code(code)).is_none(),
+            "{code}"
         );
-        assert_eq!(extract_typed_responses(&invalid), None);
+    }
+
+    #[rstest::rstest]
+    #[case::typed_response(
+        r"#[route(get, responses = [(404, errors::NotFound)])] fn t() {}",
+        Some(vec![(404, "errors::NotFound".to_string())])
+    )]
+    fn slow_path_reads_typed_responses(
+        #[case] code: &str,
+        #[case] expected: Option<Vec<(u16, String)>>,
+    ) {
+        let route_info = extract_route_info(&parse_attrs_from_code(code)).expect("route attribute");
+        assert_eq!(route_info.typed_responses, expected);
     }
 
     #[rstest::rstest]

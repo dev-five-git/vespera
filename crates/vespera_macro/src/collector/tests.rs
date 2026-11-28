@@ -764,6 +764,7 @@ fn stored_test_only_routes_pick_the_registered_twin() {
     let file_path = file.display().to_string();
     let defs = test_scope::fn_definitions(&file);
     let stored = |name: &str, method: &str, signature: &str| StoredRouteInfo {
+        own_test_only: false,
         fn_name: name.to_string(),
         method: Some(method.to_string()),
         fn_sig_str: signature.to_string(),
@@ -823,6 +824,7 @@ fn stored_inline_module_route_is_a_compile_error() {
     );
     crate::schema_macro::file_cache::bump_epoch();
     let storage = [StoredRouteInfo {
+        own_test_only: false,
         fn_name: "list".to_string(),
         method: Some("get".to_string()),
         custom_path: None,
@@ -880,6 +882,7 @@ fn stored_inline_module_scope_is_authoritative(
     );
     crate::schema_macro::file_cache::bump_epoch();
     let storage = [StoredRouteInfo {
+        own_test_only: false,
         fn_name: "list".to_string(),
         method: Some("get".to_string()),
         fn_sig_str: "async fn list()".to_string(),

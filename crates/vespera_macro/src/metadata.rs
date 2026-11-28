@@ -234,6 +234,12 @@ pub struct CollectedMetadata {
     /// documented (see `collector::test_scope`)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub test_only_routes: Vec<TestOnlyRoute>,
+    /// Production twins of stored test-only routes (identical signature,
+    /// `#[cfg(not(test))]` beside `#[cfg(test)]`): documented in place of the
+    /// test-only entry (see `collector::test_scope::documented_view`), never
+    /// mounted, because this build compiled their fn out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documented_twins: Vec<RouteMetadata>,
 }
 
 /// A compiled route (in `CollectedMetadata::routes`) that only exists in
@@ -259,6 +265,7 @@ impl CollectedMetadata {
             crons: Vec::new(),
             cfg_routes: Vec::new(),
             test_only_routes: Vec::new(),
+            documented_twins: Vec::new(),
         }
     }
 

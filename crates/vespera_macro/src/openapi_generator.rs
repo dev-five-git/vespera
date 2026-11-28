@@ -549,6 +549,7 @@ mod tests {
             Vec::new(),
         )])]);
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "secure_route".to_string(),
             method: Some("get".to_string()),
             custom_path: Some("/secure".to_string()),
@@ -681,6 +682,7 @@ mod tests {
         });
 
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "get_user".to_string(),
             method: Some("get".to_string()),
             custom_path: Some("/users/{id}".to_string()),
@@ -745,6 +747,7 @@ mod tests {
         });
 
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "get_user".to_string(),
             method: Some("get".to_string()),
             custom_path: Some("/users/{id}".to_string()),
@@ -820,6 +823,7 @@ mod tests {
         });
 
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "create_user".to_string(),
             method: Some("post".to_string()),
             custom_path: Some("/users".to_string()),
@@ -879,6 +883,7 @@ mod tests {
             description: None,
         });
         let route_storage = vec![StoredRouteInfo {
+            own_test_only: false,
             fn_name: "list_users".to_string(),
             method: Some("get".to_string()),
             custom_path: Some("/users".to_string()),

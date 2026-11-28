@@ -22,6 +22,7 @@ fn cfg_twin_route_handler_falls_back_to_the_stored_signature() {
         .push(route_meta("GET", "/users", "get_users", &route_file_path));
 
     let route_storage = vec![StoredRouteInfo {
+        own_test_only: false,
         fn_name: "get_users".to_string(),
         method: Some("get".to_string()),
         file_path: Some(route_file_path),
