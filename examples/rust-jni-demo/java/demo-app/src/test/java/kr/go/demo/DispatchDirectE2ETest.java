@@ -257,6 +257,10 @@ class DispatchDirectE2ETest {
         if (thrown[0] instanceof RuntimeException re) {
             throw re;
         }
+        if (thrown[0] instanceof Error error) {
+            // An AssertionError keeps its type and message for the test report.
+            throw error;
+        }
         if (thrown[0] != null) {
             throw new IllegalStateException(thrown[0]);
         }

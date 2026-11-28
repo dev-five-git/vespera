@@ -645,8 +645,10 @@ public class VesperaReactiveProxyHandler implements WebHandler {
             status = 500;
             message = ProxyErrors.GENERIC_FAILURE;
         }
+        // Reported whether the error body was written or the write failed (the client is
+        // gone): the failure still reaches the observers and the one WARN line.
         return out.writeError(status, message)
-                .doOnSuccess(ignored -> px.complete(status, out.panicked(), cause));
+                .doFinally(signal -> px.complete(status, out.panicked(), cause));
     }
 
     /** 503 for a missing native symbol; the error is the cause of the request's one WARN line. */

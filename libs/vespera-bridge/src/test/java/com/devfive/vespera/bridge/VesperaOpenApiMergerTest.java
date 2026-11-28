@@ -215,6 +215,52 @@ class VesperaOpenApiMergerTest {
                 ((Schema<?>) note.getProperties().get("item")).get$ref(), "a $ref is rewritten");
     }
 
+    /**
+     * A data keyword is not descended into, even when its value is an object that
+     * holds a {@code $ref}-shaped entry; a property <em>named</em> {@code example} is
+     * a schema though, so its {@code $ref} is still rewritten.
+     */
+    @Test
+    void dataKeywordsAreNotDescendedIntoButPropertiesNamedAsKeywordsAre() {
+        OpenAPI doc = new OpenAPI().components(new Components()
+                .addSchemas("Item", new StringSchema()));
+        String spec = """
+                {
+                  "openapi": "3.1.0",
+                  "info": {"title": "Rust", "version": "1.0.0"},
+                  "paths": {"/note": {"get": {"responses": {"200": {"description": "ok",
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Note"}}}}}}}},
+                  "components": {"schemas": {
+                    "Item": {"type": "object", "properties": {"id": {"type": "integer"}}},
+                    "Note": {"type": "object",
+                      "example": {"$ref": "#/components/schemas/Item"},
+                      "examples": [{"$ref": "#/components/schemas/Item"}],
+                      "x-ext": {"$ref": "#/components/schemas/Item"},
+                      "properties": {
+                        "example": {"$ref": "#/components/schemas/Item"},
+                        "default": {"type": "object", "properties": {"x": {"$ref": "#/components/schemas/Item"}}}
+                      }}
+                  }}
+                }
+                """;
+        merger(app -> bytes(spec), List.of("_default")).customise(doc);
+
+        Schema<?> note = doc.getComponents().getSchemas().get("Note");
+        assertEquals(Map.of("$ref", "#/components/schemas/Item"), note.getExample(),
+                "an object-valued example is data and is left alone");
+        assertEquals(List.of(Map.of("$ref", "#/components/schemas/Item")), note.getExamples(),
+                "an examples list is data and is left alone");
+        assertEquals("#/components/schemas/Item", ((Map<?, ?>) note.getExtensions().get("x-ext")).get("$ref"),
+                "an extension is data and is left alone");
+        assertEquals("#/components/schemas/vespera_Item",
+                ((Schema<?>) note.getProperties().get("example")).get$ref(),
+                "a property named example is a schema and its $ref is rewritten");
+        Schema<?> defaultProperty = (Schema<?>) note.getProperties().get("default");
+        assertEquals("#/components/schemas/vespera_Item",
+                ((Schema<?>) defaultProperty.getProperties().get("x")).get$ref(),
+                "a property named default is a schema and its nested $ref is rewritten");
+    }
+
     @Test
     void publicRustOperationsDoNotInheritJavasTopLevelSecurity() {
         String spec = """

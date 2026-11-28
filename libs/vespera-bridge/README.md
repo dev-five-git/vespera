@@ -816,7 +816,7 @@ allocate a fresh direct buffer, lose all pooling benefit, and
 accumulate off-heap memory until the virtual thread is
 garbage-collected.
 
-**Automatic mitigation (since 0.2.1):** `dispatchDirectPooled` detects
+**Automatic mitigation (since 0.2.1; poll-first since 0.6):** `dispatchDirectPooled` detects
 the calling thread via `Thread.isVirtual()` (resolved reflectively so
 the library still targets Java 17) and, when it is a virtual thread,
 **routes the request to the poll-first `ParkingDispatch.park` path
