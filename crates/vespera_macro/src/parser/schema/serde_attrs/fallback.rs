@@ -12,14 +12,27 @@ pub(super) fn quoted_value_after_key(tokens: &str, key: &str) -> Option<String> 
     None
 }
 
-/// The value of the `"..."` literal `value_part` starts with (after
-/// whitespace); a value of any other kind yields `None`. The closing quote is
-/// the first one not escaped by a backslash, and the literal's escapes
-/// (`\"`, `\\`, `\u{..}`) are decoded by `syn`, as rustc decodes them.
+/// The value of the string literal `value_part` starts with (after
+/// whitespace), plain (`"..."`) or raw (`r"..."`, `r#"..."#`); a value of any
+/// other kind yields `None`. A plain literal's closing quote is the first one
+/// not escaped by a backslash, a raw literal's is the quote followed by the
+/// same number of `#`. The literal is decoded by `syn`, as rustc decodes it.
 fn leading_string_literal(value_part: &str) -> Option<String> {
-    let body = value_part.trim_start().strip_prefix('"')?;
+    let text = value_part.trim_start();
+    let end = if text.starts_with('"') {
+        quoted_literal_end(text)?
+    } else {
+        raw_literal_end(text)?
+    };
+    syn::parse_str::<syn::LitStr>(&text[..end])
+        .ok()
+        .map(|literal| literal.value())
+}
+
+/// Byte index just past the plain literal `text` (which starts with `"`).
+fn quoted_literal_end(text: &str) -> Option<usize> {
     let mut escaped = false;
-    let end = body.char_indices().find_map(|(index, ch)| {
+    text.char_indices().skip(1).find_map(|(index, ch)| {
         if escaped {
             escaped = false;
             None
@@ -27,12 +40,21 @@ fn leading_string_literal(value_part: &str) -> Option<String> {
             escaped = true;
             None
         } else {
-            (ch == '"').then_some(index)
+            (ch == '"').then_some(index + 1)
         }
-    })?;
-    syn::parse_str::<syn::LitStr>(&format!("\"{}\"", &body[..end]))
-        .ok()
-        .map(|literal| literal.value())
+    })
+}
+
+/// Byte index just past the raw literal `text` (`r` + `#`s + `"` ... `"` +
+/// the same `#`s); `None` when `text` opens no raw literal.
+fn raw_literal_end(text: &str) -> Option<usize> {
+    let after_r = text.strip_prefix('r')?;
+    let hashes = after_r.len() - after_r.trim_start_matches('#').len();
+    let body = after_r[hashes..].strip_prefix('"')?;
+    let closing = format!("\"{}", "#".repeat(hashes));
+    let close = body.find(&closing)?;
+    // `r` + hashes + `"` + body + closing
+    Some(1 + hashes + 1 + close + closing.len())
 }
 
 pub(super) fn contains_standalone_word(tokens: &str, word: &str) -> bool {
@@ -191,6 +213,32 @@ mod tests {
             result,
             Some(None),
             "fallback path must detect bare `default`"
+        );
+    }
+
+    /// The raw-token fallback reads a raw string literal value (`r"..."`,
+    /// `r#"..."#`) the same as a plain one, for `default` and `rename`.
+    #[rstest]
+    #[case::plain("\"f\"", "f")]
+    #[case::raw("r\"f\"", "f")]
+    #[case::raw_hashed("r#\"f\"#", "f")]
+    #[case::raw_keeps_backslash("r#\"a\\b\"#", "a\\b")]
+    fn test_fallback_reads_raw_and_plain_literal_values(
+        #[case] literal: &str,
+        #[case] value: &str,
+    ) {
+        let tokens: TokenStream = format!("@bogus, default = {literal}, rename = {literal}")
+            .parse()
+            .expect("token stream parses");
+        let attr = create_attr_with_raw_tokens(tokens);
+        assert_eq!(
+            extract_default(std::slice::from_ref(&attr)),
+            Some(Some(value.to_string()))
+        );
+        assert_eq!(
+            extract_field_rename(&[attr]).as_deref(),
+            Some(value),
+            "rename through the fallback"
         );
     }
 

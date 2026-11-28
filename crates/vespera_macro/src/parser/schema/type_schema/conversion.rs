@@ -597,10 +597,21 @@ fn parse_type_impl(
             // `module::Schema` names its module-scoped key when one is registered:
             // a renamed `Schema` may share its name with an unrelated component.
             // Only without a registered key is the convention tried, a schema
-            // named `ModuleSchema` (or `moduleSchema`).
+            // named `ModuleSchema` (or `moduleSchema`). A path keyword parent
+            // (`crate::Schema`, `self::Schema`, `super::Schema`) is no module
+            // name, so it never selects a `CrateSchema`-style component.
             let resolved_name = match scoped_key() {
                 Some(key) => key,
-                None if type_name == "Schema" && path.segments.len() > 1 => {
+                None if type_name == "Schema"
+                    && path.segments.len() > 1
+                    && !matches!(
+                        path.segments[path.segments.len() - 2]
+                            .ident
+                            .to_string()
+                            .as_str(),
+                        "crate" | "self" | "super"
+                    ) =>
+                {
                     // The parent module name (e.g., "user" from "crate::models::user::Schema")
                     let parent_name = path.segments[path.segments.len() - 2]
                         .ident
@@ -929,3 +940,5 @@ mod tests_arms;
 mod tests_const;
 #[cfg(test)]
 mod tests_instances;
+#[cfg(test)]
+mod tests_path_keyword;
