@@ -25,7 +25,5 @@ pub struct Model {
     pub memo_comments: HasMany<super::memo_comment::Entity>,
 }
 
-// Index definitions (SeaORM uses Statement builders externally)
-// (unnamed) on [email]
 vespera::schema_type!(Schema from Model, name = "UserSchema");
 impl ActiveModelBehavior for ActiveModel {}

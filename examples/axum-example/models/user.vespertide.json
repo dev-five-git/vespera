@@ -4,7 +4,7 @@
   "description": "User model",
   "columns": [
     { "name": "id", "type": "integer", "nullable": false, "primary_key": { "auto_increment": true }, "comment": "User ID" },
-    { "name": "email", "type": "text", "nullable": false, "unique": true, "index": true, "comment": "User email" },
+    { "name": "email", "type": "text", "nullable": false, "unique": true, "comment": "User email" },
     { "name": "name", "type": { "kind": "varchar", "length": 100 }, "nullable": false, "comment": "User name" },
     { "name": "created_at", "type": "timestamptz", "nullable": false, "default": "NOW()", "comment": "Created at" },
     { "name": "updated_at", "type": "timestamptz", "nullable": false, "default": "NOW()", "comment": "Updated at" }

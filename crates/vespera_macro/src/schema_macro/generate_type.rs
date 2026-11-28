@@ -351,7 +351,7 @@ pub fn generate_schema_type_code(
             // and the name its helpers are generated under.
             let field_cfg = assignments::field_cfg(&field.attrs);
             let helper_key = if twin_names.contains(&rust_field_name) {
-                format!("{rust_field_name}_{field_index}")
+                helper_key::twin_helper_key(&parsed_struct.fields, &rust_field_name, field_index)
             } else {
                 rust_field_name.clone()
             };
@@ -981,6 +981,7 @@ pub fn generate_schema_type_code(
 pub(super) mod assignments;
 
 mod checks;
+mod helper_key;
 mod multipart_carry;
 mod resolve;
 

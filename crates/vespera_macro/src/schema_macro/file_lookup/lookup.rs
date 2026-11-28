@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use syn::Type;
 
+use super::fk::names_other_crate;
 use crate::metadata::StructMetadata;
 use crate::schema_macro::crate_layout::{CrateLayout, layout_for};
 
@@ -544,6 +545,11 @@ pub fn file_path_to_module_path(file_path: &Path, src_dir: &Path) -> Vec<String>
 /// absolutized); the module is looked up through its own file, then the
 /// module tree (crate root, inline / `#[path]` modules).
 pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
+    // A path naming another crate (`::shared_api::user::Schema`) is never read
+    // from this crate's `src` (R44-SM1-L1).
+    if names_other_crate(path_str) {
+        return None;
+    }
     let segments = schema_path_segments(path_str, false);
     let (struct_name, module_segments) = segments.split_last()?;
     find_in_schema_module(module_segments, struct_name)
@@ -553,6 +559,9 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
 /// Converts "`crate::models::user::Schema`" -> finds `Model` in the
 /// `crate::models::user` module.
 pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetadata> {
+    if names_other_crate(schema_path_str) {
+        return None;
+    }
     let module_segments = schema_path_segments(schema_path_str, true);
     if module_segments.is_empty() {
         return None;

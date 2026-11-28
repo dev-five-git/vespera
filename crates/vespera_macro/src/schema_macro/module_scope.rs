@@ -399,9 +399,10 @@ fn all_chain_candidates(items: &[syn::Item]) -> Vec<(String, usize, Vec<String>)
     found
 }
 
-/// Visit every struct / enum ident of `items` (inline modules and fn bodies
-/// included, in source order) with its inline `mod` chain. A fn body's items
-/// take the chain of the module the fn sits in (SM0-L3).
+/// Visit every struct / enum ident of `items` (inline modules, fn bodies and
+/// the bodies of impl / trait methods included, in source order) with its
+/// inline `mod` chain. A body's items take the chain of the module the
+/// fn / impl / trait sits in (SM0-L3, R44-SM-L1).
 fn walk_chains(
     items: &[syn::Item],
     chain: &mut Vec<String>,
@@ -420,15 +421,44 @@ fn walk_chains(
                 continue;
             }
             syn::Item::Fn(function) => {
-                let mut body = BodyItems(Vec::new());
-                syn::visit::Visit::visit_block(&mut body, &function.block);
-                walk_chains(&body.0, chain, visit);
+                walk_body(&function.block, chain, visit);
+                continue;
+            }
+            syn::Item::Impl(imp) => {
+                for method in &imp.items {
+                    if let syn::ImplItem::Fn(method) = method {
+                        walk_body(&method.block, chain, visit);
+                    }
+                }
+                continue;
+            }
+            syn::Item::Trait(tr) => {
+                for method in &tr.items {
+                    if let syn::TraitItem::Fn(syn::TraitItemFn {
+                        default: Some(block),
+                        ..
+                    }) = method
+                    {
+                        walk_body(block, chain, visit);
+                    }
+                }
                 continue;
             }
             _ => continue,
         };
         visit(ident, chain);
     }
+}
+
+/// [`walk_chains`] over the items a block declares.
+fn walk_body(
+    block: &syn::Block,
+    chain: &mut Vec<String>,
+    visit: &mut dyn FnMut(&syn::Ident, &[String]),
+) {
+    let mut body = BodyItems(Vec::new());
+    syn::visit::Visit::visit_block(&mut body, block);
+    walk_chains(&body.0, chain, visit);
 }
 
 /// The items a block declares, at any depth of its statements. Each item is

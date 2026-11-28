@@ -324,11 +324,18 @@ pub mod routes;",
         let _call_site =
             crate::schema_macro::file_lookup::set_test_call_site_module("crate::routes");
         bump_epoch();
-        let input: SchemaTypeInput = syn::parse_str("UserDto from Model").unwrap();
-        let result = resolve_source(&input, "Model", &storage);
         assert!(
-            result.is_err(),
-            "the extern import must not resolve to the local entry"
+            imported_from_another_crate("Model"),
+            "the call site imports `Model` from another crate"
+        );
+        let input: SchemaTypeInput = syn::parse_str("UserDto from Model").unwrap();
+        let error = resolve_source(&input, "Model", &storage)
+            .expect_err("the extern import must not resolve to the local entry");
+        // The file lookup's own not-found diagnostic, not the stored-entry
+        // fallback (which would have been `Ok`).
+        assert!(
+            error.to_string().contains("not found"),
+            "not-found diagnostic expected: {error}"
         );
     }
 

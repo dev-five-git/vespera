@@ -233,3 +233,39 @@ fn multipart_vec_fields_default_when_the_container_default_is_dropped() {
         "{metadata}"
     );
 }
+
+/// R44-SM2-L1: a `#[cfg]` twin's helpers are keyed by field index (`owner_1`
+/// for the twin at index 1), which a real field `owner_1` also takes. The
+/// bumped key keeps every generated fn name unique (E0428 before).
+#[test]
+fn cfg_twin_helpers_do_not_collide_with_a_real_field_name() {
+    let storage = stored(
+        "Source",
+        r#"pub struct Source {
+            #[cfg(feature = "pg")]
+            #[sea_orm(default_value = "1")]
+            pub owner: i32,
+            #[cfg(not(feature = "pg"))]
+            #[sea_orm(default_value = "2")]
+            pub owner: i32,
+            #[sea_orm(default_value = "3")]
+            pub owner_1: i32,
+        }"#,
+    );
+    let (code, _) = generate("Dto from Source", &storage);
+    let file: syn::File = syn::parse_str(&code).unwrap();
+    let names: Vec<String> = file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function) => Some(function.sig.ident.to_string()),
+            _ => None,
+        })
+        .collect();
+    let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+    assert!(
+        names.iter().any(|name| name.ends_with("owner_1_")),
+        "the twin's helpers take the bumped key: {names:?}"
+    );
+    assert_eq!(unique.len(), names.len(), "duplicate fn names: {names:?}");
+}

@@ -75,8 +75,9 @@ pub fn statically_active(predicate: &Predicate) -> bool {
 }
 
 /// Whether `predicate` is known to be false (`any()`, `false`, a disabled
-/// `feature = ".."` inside rustc); unknown counts as not false. The mirror of
-/// [`statically_active`] is this same test (R33-SM0: one function, not two).
+/// `feature = ".."` inside rustc); unknown counts as not false. It is a
+/// separate function from [`statically_active`] that wraps the same `eval`
+/// and differs only in the value it expects (`false`, not `true`).
 pub fn statically_false(predicate: &Predicate) -> bool {
     eval(predicate, memoized_features().as_ref().as_deref()) == Some(false)
 }

@@ -577,6 +577,10 @@ fn item_module_chain_walks_inline_modules(
 #[case::unique_name("Kind", 0, true, Some(&["a"][..]))]
 #[case::fn_body_item_of_a_module("Inner", 0, true, Some(&["a"][..]))]
 #[case::fn_body_item_at_top_level("TopInner", 0, true, Some(&[][..]))]
+// R44-SM-L1: an impl / trait method body inside `mod c` takes the chain of
+// the module the impl / trait sits in.
+#[case::impl_method_body_item("InImpl", 0, true, Some(&["c"][..]))]
+#[case::trait_method_body_item("InTrait", 0, true, Some(&["c"][..]))]
 #[case::not_declared("Nope", 0, true, Some(&[][..]))]
 #[case::unreadable_file("Dup", 5, false, None)]
 fn item_module_chain_cached_tells_repeated_names_apart(
@@ -585,7 +589,7 @@ fn item_module_chain_cached_tells_repeated_names_apart(
     #[case] write: bool,
     #[case] expected: Option<&[&str]>,
 ) {
-    let source = "mod a {\n    pub enum Kind { A } fn make() { struct Inner; }\n}\n\nmod b2 { pub struct Dup; }\nmod b3 { pub struct Dup; }\nfn top() { struct TopInner; }\n";
+    let source = "mod a {\n    pub enum Kind { A } fn make() { struct Inner; }\n}\n\nmod b2 { pub struct Dup; }\nmod b3 { pub struct Dup; }\nfn top() { struct TopInner; }\nmod c {\n    pub struct Holder;\n    impl Holder { fn method() { struct InImpl; } }\n    trait Tr { fn d() { struct InTrait; } }\n}\n";
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("lib.rs");
     if write {
