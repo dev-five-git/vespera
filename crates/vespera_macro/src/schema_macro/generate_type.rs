@@ -713,8 +713,8 @@ pub fn generate_schema_type_code(
             relation_names: &relation_names,
             used_adapters: &used_adapters,
             field_mappings: &field_mappings,
-            picked: &pick_set,
         },
+        &parsed_struct,
         &at,
         &source_type_name,
     )?;

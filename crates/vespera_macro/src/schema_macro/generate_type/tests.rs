@@ -296,6 +296,12 @@ fn raw_type_name_in_generated_fn_names() {
     "Dto from Model, omit_default, pick = [\"id\", \"name\"]",
     "`pick` names field `id`, which this type does not include: `omit_default` drops it (a SeaORM default / primary key)"
 )]
+// R43-SM5-V1: a `pick` name written as the JSON name names the written field
+// (the Rust identifier `count_value` is what resolves, not what is written).
+#[case::pick_json_name_omit_default(
+    "Dto from Model, omit_default, pick = [\"countValue\"]",
+    "`pick` names field `countValue`, which this type does not include: `omit_default` drops it (a SeaORM default / primary key)"
+)]
 #[case::rename_multipart_relation(
     "Dto from Model, multipart, rename = [(\"owner\", \"o\")]",
     "`rename` names field `owner`, which this type does not include: `multipart` types carry no relations"
@@ -323,6 +329,9 @@ fn naming_a_dropped_field_is_an_error(#[case] input: &str, #[case] expected: &st
             pub name: String,
             #[sea_orm(default_value = "0")]
             pub count: i32,
+            #[serde(rename = "countValue")]
+            #[sea_orm(default_value = "0")]
+            pub count_value: i32,
             pub owner: HasOne<super::user::Entity>,
             pub items: HasMany<super::item::Entity>,
             pub broken: HasOne,
