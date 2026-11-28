@@ -117,15 +117,37 @@ pub(super) fn truncate_reflected_value(value: &str) -> std::borrow::Cow<'_, str>
 /// an error message or the envelope `path` (longer names end in `…`).
 pub(super) const MAX_REFLECTED_FIELD_NAME_CHARS: usize = 64;
 
-/// Whether [`write_printable`] escapes `c`: control characters, bidi
-/// overrides and isolates, zero-width / directional marks and the line and
-/// paragraph separators, which would otherwise reorder or hide the text
-/// around them in a log line or a rendered error.
+/// Whether [`write_printable`] escapes `c`: control characters, the line and
+/// paragraph separators, and the format controls (general category `Cf`)
+/// that reorder, hide or join the text around them in a log line or a
+/// rendered error: soft hyphen, Arabic letter / number marks, Mongolian
+/// vowel separator, zero-width joiners and marks, bidi overrides and
+/// isolates, word joiner and invisible operators, the byte order mark,
+/// interlinear anchors, the shaping and musical controls, and the tag
+/// characters. The list is hand-written (no Unicode table dependency).
 fn needs_escape(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            '\u{00AD}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061C}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08E2}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{110BD}'
+                | '\u{110CD}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0001}'
+                | '\u{E0020}'..='\u{E007F}'
         )
 }
 

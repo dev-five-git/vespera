@@ -145,6 +145,10 @@ int vespera_dispatch(const uint8_t *request, size_t request_len, uint8_t **respo
  * send non-idempotent requests through vespera_dispatch instead.  Like
  * vespera_dispatch, a shut-down runtime answers a 503 wire response and a
  * runtime that could not be built a 500 one.
+ * A text/event-stream response (any status) is never drained, because it
+ * may never end: the call answers a 500 wire response whose error names the
+ * streaming mode, and the body is not read.  Deliver such a response with
+ * vespera_dispatch_async or the streaming dispatch modes instead.
  */
 int vespera_dispatch_into(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *written);
 

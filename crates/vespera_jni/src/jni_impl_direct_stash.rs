@@ -436,6 +436,11 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_DirectStash_dispatchResum
 /// never re-runs.
 fn dispatch_resumable(input: &[u8], out: &mut [u8]) -> Option<jint> {
     if let Some(code) = undersized_out_code(out.len()) {
+        // Zero the handle area like the error-wire path does
+        // (`write_error_to_out`): a caller reads an overflow handle from
+        // there, and must never take a stale token for this call's.
+        let handle_len = out.len().min(STASH_HANDLE_LEN);
+        out[..handle_len].fill(0);
         return Some(code);
     }
     // Stashed inside the future: under the dispatch's runtime lease.

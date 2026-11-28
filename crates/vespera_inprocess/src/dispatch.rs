@@ -352,8 +352,9 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
         Bytes::from(body),
         // Envelope dispatch: `headers` are owned `String`s with no wire
         // owner, so the zero-copy fast path does not apply — pass `None`
-        // and let `header_value_from_owner` fall back to `from_str` (same
-        // bytes, same errors, no behaviour change).
+        // and let `header_value_from_owner` copy each value (`from_str` for
+        // ASCII; non-ASCII takes the Latin-1 mapping, as on the owned path).
+        // Same bytes, same errors, no behaviour change.
         None,
         principal,
     )
@@ -618,6 +619,11 @@ pub fn dispatch_into(
 /// or use [`dispatch_into_async_borrowed_resumable`], which keeps the
 /// overflowing response instead.
 ///
+/// A `text/event-stream` response is never drained (it may never end): the
+/// call answers a `500` wire response naming the streaming mode instead, and
+/// the body is not polled.  Use [`dispatch_into_async_borrowed_resumable`]
+/// (or a streaming dispatch) to deliver one.
+///
 /// A configured [`crate::dispatch_timeout`] that expires writes a `504`
 /// wire response into `out` instead.
 pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
@@ -664,7 +670,7 @@ async fn dispatch_into_inner(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResul
 /// for the entire `block_on`.
 ///
 /// Byte-identical to [`dispatch_into_async`] for the same wire bytes; all
-/// the same error / `422` / overflow semantics apply.
+/// the same error / `422` / overflow / `text/event-stream` semantics apply.
 pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
     traced!("direct", {
         let done = Deadline::start()
@@ -696,9 +702,9 @@ async fn dispatch_into_borrowed_inner(input: &[u8], out: &mut [u8]) -> DirectWri
 /// response body stops being read the moment a frame does not fit (that frame
 /// is read and kept, bounded by `max_buffered_response_bytes`), or up front
 /// when its exact size hint already exceeds `out`, so an unbounded body never
-/// blocks or buffers more than that frame here.  The one exception is a non-event-stream `422`, which first reads up
-/// to the 64 KiB hoist bound (`validation_errors` hoisting) before `out` is
-/// checked.  A `text/event-stream` response is returned pending immediately
+/// blocks or buffers more than that frame here.  The one exception is a
+/// non-event-stream `422`, which first reads up to the 64 KiB hoist bound
+/// (`validation_errors` hoisting) before `out` is checked.  A `text/event-stream` response is returned pending immediately
 /// ([`PendingDirectResponse::prefers_streaming`](crate::PendingDirectResponse::prefers_streaming))
 /// because it may never end, and skips that prefetch.  A configured [`crate::dispatch_timeout`]
 /// bounds the call (expiry → `504` wire, written into `out`).  The body
@@ -763,7 +769,8 @@ async fn dispatch_borrowed_to_parts(
     // `Bytes` to share into the URI — pass `None` and let `build_uri` parse the
     // borrowed path (the zero-copy URI win applies only to the owned paths).
     // Same reasoning for the header-owner argument: no owning `Bytes`, so
-    // `header_value_from_owner` falls back to `from_str` exactly as before.
+    // `header_value_from_owner` copies each value (ASCII via `from_str`,
+    // non-ASCII through the Latin-1 mapping) exactly as before.
     dispatch_and_split(
         router,
         &header.method,

@@ -1,7 +1,9 @@
 //! Native multipart form data extraction for Vespera.
 //!
-//! Replaces the `axum_typed_multipart` crate with a zero-dependency (beyond axum)
-//! implementation of typed multipart extraction. All types here are referenced by
+//! Replaces the `axum_typed_multipart` crate with an in-tree implementation of
+//! typed multipart extraction, built on the `multer` parser behind axum's
+//! multipart support (plus `tempfile` and tokio file I/O for spooled uploads).
+//! All types here are referenced by
 //! the `#[derive(Multipart)]` macro's generated code.
 //!
 //! # Key types
