@@ -487,7 +487,9 @@ fn build_request_from_bytes_builder_old<'h>(
     let mut has_content_type = false;
     for (name, value) in headers {
         has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
-        builder = builder.header(name, value);
+        // Same Latin-1 value bytes as `header_value_from_owner` (non-ASCII
+        // chars map to one byte each), so the twin stays byte-identical.
+        builder = builder.header(name, &*crate::header_latin1::header_value_wire_bytes(value));
     }
     if !body_bytes.is_empty() && !has_content_type {
         builder = builder.header("content-type", "application/json");
@@ -925,6 +927,21 @@ mod tests {
             41
         );
         assert_eq!(bench_build_request_old("POST", "/x", "", &[], body), 34);
+    }
+
+    #[test]
+    fn bench_builders_agree_on_non_ascii_header_bytes() {
+        // `caf\u{e9}` is 4 wire bytes (Latin-1), 5 UTF-8 bytes: both twins
+        // must count the wire bytes, as the production path does.
+        let headers = [("x-n", "caf\u{e9}")];
+        assert_eq!(
+            bench_build_request_new("GET", "/", "", &headers, Bytes::new()),
+            11
+        );
+        assert_eq!(
+            bench_build_request_old("GET", "/", "", &headers, Bytes::new()),
+            11
+        );
     }
 
     #[test]

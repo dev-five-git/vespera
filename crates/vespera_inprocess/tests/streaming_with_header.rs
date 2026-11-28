@@ -721,9 +721,13 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bidirectional_with_header_slow_producer_delivers_every_chunk() {
-    // Producer sleeps between chunks, so the body is consumed across waits.
-    // (`Poll::Pending` from ChannelBody is observed directly by the unit test
-    // `channel_body_is_pending_while_the_producer_is_slow`.)
+    // The handler (`echo_bytes`) reads the whole body before it responds, so
+    // the first two pulls run inline on this thread (the small-body fast
+    // path; their sleeps block the caller). Pull 3 and `End` come from the
+    // producer thread, which sleeps before sending, so the handler's body
+    // read really waits (`Poll::Pending`) across those sleeps. The pending
+    // state is also checked directly by the unit test
+    // `channel_body_is_pending_while_the_producer_is_slow`.
     install_router();
     let wire = encode_wire(
         "POST",
