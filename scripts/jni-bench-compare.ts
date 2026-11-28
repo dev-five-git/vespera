@@ -195,16 +195,16 @@ function readSide(dir: string, side: 'base' | 'head'): Map<string, number>[] {
 }
 
 /**
- * A threshold env value (a fraction, `0.30` = +30%), `fallback` when unset.
- * `undefined` for anything that is not a finite number >= 0 (`30%`, `abc`,
- * an empty string): `NaN` would make every comparison false and pass the
- * gate vacuously.
+ * A threshold env value (a fraction, `0.30` = +30%), `fallback` when unset
+ * or empty (the shell scripts' `${VAR:-default}` treats empty as unset too).
+ * `undefined` for anything that is not a finite number >= 0 (`30%`, `abc`):
+ * `NaN` would make every comparison false and pass the gate vacuously.
  */
 export function parseThreshold(
   raw: string | undefined,
   fallback: number,
 ): number | undefined {
-  if (raw === undefined) return fallback
+  if (raw === undefined || raw === '') return fallback
   if (!/^\s*\d+(\.\d+)?\s*$/.test(raw)) return undefined
   return Number(raw)
 }

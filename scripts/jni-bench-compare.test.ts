@@ -171,7 +171,7 @@ describe('parseThreshold', () => {
     ['0', 0],
     ['30%', undefined],
     ['abc', undefined],
-    ['', undefined],
+    ['', 0.3],
     ['-0.1', undefined],
     ['Infinity', undefined],
   ])('%p -> %p', (raw, expected) => {

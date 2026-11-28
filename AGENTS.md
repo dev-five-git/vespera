@@ -124,7 +124,7 @@ vespera/
 | `crates/vespera_inprocess/src/direct.rs` | ~519 | DIRECT write: `finish_resumable` (never drains past `out`; `text/event-stream` handed over), `PendingDirectResponse` (`write_into` / `stream`, deadline-bounded), legacy exact-size `finish_direct_write`; every body DIRECT writes or counts (all statuses, exact-length or not, first write and `write_into`) is capped by `max_buffered_response_bytes` like the buffered path (`500`), only `stream` is uncapped |
 | `crates/vespera_jni/src/jni_impl_direct.rs` | ~380 | `dispatchDirect0` symbol + its `jint` overflow/unrepresentable sentinel protocol; `run_direct_symbol` shared buffer validation |
 | `crates/vespera_jni/src/jni_impl_park.rs` | ~159 | `AsyncDispatch.dispatchPollFirst0` (virtual-thread `ParkingDispatch`): poll the dispatch once on the caller under the runtime context (no-op waker); ready → inline wire, pending → spawn the half-polled future, a worker completes the `CompletableFuture`; holds the async in-flight permit + `RuntimeLease` throughout
-| `crates/vespera_jni/src/jni_impl_direct_stash.rs` | ~820 | DIRECT overflow stash (`BTreeMap`; hard ceilings 4096 entries / 1 GiB held, 30 s TTL, live entries never evicted early, a fresh overflow past a ceiling answers a retryable `503`) + `DirectStash.{dispatchResumable0,fetch0,stream0,discard0}`; handle = 8-byte BE token + flags byte (`FLAG_EXACT`, `FLAG_STREAM`) in `out[0..9]` |
+| `crates/vespera_jni/src/jni_impl_direct_stash.rs` | ~996 | DIRECT overflow stash (`BTreeMap`; hard ceilings 4096 entries / 1 GiB held, 30 s TTL, live entries never evicted early, a fresh overflow past a ceiling answers a retryable `503`) + `DirectStash.{dispatchResumable0,fetch0,stream0,discard0}`; handle = 8-byte BE token + flags byte (`FLAG_EXACT`, `FLAG_STREAM`) in `out[0..9]` |
 | `crates/vespera_inprocess/src/runtime.rs` | ~566 | Feature `runtime`: the shared host runtime for JNI + C ABI — worker / blocking-pool knobs, lazy build, `RuntimeLease` in-flight counting through `LeaseGate` (count + shut-down flag in one atomic word), graceful `shutdown_runtime` / `shutdown_runtime_then(timeout, cleanup)` (drain, then `shutdown_timeout`; background thread when called inside a runtime), `on_shared_runtime` hooks (cron), `mark_host_loaded` / `host_loaded`; `vespera_jni` re-exports it (its `shutdown_runtime` adds the DIRECT-stash cleanup) |
 | `crates/vespera_inprocess/src/runtime/gate.rs` | ~202 | Tokio-free `LeaseGate` (runtime lease count + shut-down bit, one `fetch_add` to enter, `fetch_or` to close); atomics swap to loom under `--cfg vespera_loom` (unit-test build only) and its `loom_*` models live here |
 | `crates/vespera_inprocess/src/runtime/in_flight.rs` | ~236 | Tokio-free `InFlightCap` admission protocol + the async in-flight cap (`async_max_in_flight` / `set_async_max_in_flight` / `try_acquire_async_permit` / `async_overloaded_wire`) shared by JNI `dispatchAsync` and C `vespera_dispatch_async` (ONE counter); atomics swap to loom under `--cfg vespera_loom` (unit-test build only) and its `loom_*` model lives here; `vespera_jni` re-exports the knobs |
@@ -188,7 +188,7 @@ vespera_inprocess (transport layer — no JNI deps)
 vespera_jni (JNI glue — thin layer)
   ├── vespera_inprocess (via workspace, features connect-info + runtime)
   ├── jni
-  └── tokio (rt-multi-thread, sync, time — spawn / timeouts; the shared runtime is built in `vespera_inprocess::runtime`)
+  └── tokio (rt-multi-thread, time — spawn / timeouts; `sync` is dev-only; the shared runtime is built in `vespera_inprocess::runtime`)
 
 rust-jni-demo (example — depends on vespera (features jni, ffi) plus serde, serde_json, futures-util, tokio; no axum / vespera_jni / vespera_inprocess)
   └── vespera = { features = ["jni", "ffi"] }
@@ -448,7 +448,7 @@ cargo test --test <name> -- <filter>  # Single integration test
 cargo tarpaulin --out stdout          # Coverage (via `bun run posttest`)
 
 # --- Lint / format (order matters — `prelint` runs Rust FIRST) ---
-bun run lint                          # oxlint (after `cargo clippy` x2 + `cargo fmt --check`)
+bun run lint                          # oxlint (after `cargo clippy` x6 — all-features + one no-default-features run per crate — + `cargo fmt --check`)
 bun run lint:fix                      # oxlint --fix (after `cargo clippy --fix && cargo fmt`)
 
 # --- Front-end workspace ---
@@ -597,10 +597,13 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 # entry: semver is PR-only; minimal-versions, fuzz-build and native-image are
 # not gates; rust-branch-coverage is observational):
 #   lint     cargo fmt --all --check + both clippy feature sets (= `prelint`:
-#            `--all-targets --all-features`, then the no-default-features run
-#            per package, `-p vespera -p vespera_core -p vespera_macro
-#            -p vespera_inprocess -p vespera_jni`, never `--workspace`, whose
-#            feature unification hides defaults-off builds),
+#            `--all-targets --all-features`, then one no-default-features run
+#            per package (`-p vespera`, `-p vespera_core`, `-p vespera_macro`,
+#            `-p vespera_inprocess`, `-p vespera_jni`, five separate
+#            invocations: a single multi-`-p` run unifies features across the
+#            packages, so vespera_inprocess would be linted with vespera_jni's
+#            connect-info + runtime on), never `--workspace`, whose feature
+#            unification hides defaults-off builds),
 #            bun install --frozen-lockfile, oxlint, bun test
 #   msrv     cargo check --all-features on Rust 1.88 (`rust-version` in the root
 #            Cargo.toml) for the 5 published crates — examples need newer Rust
