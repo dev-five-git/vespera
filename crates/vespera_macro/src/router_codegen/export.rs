@@ -297,8 +297,11 @@ const NAME_MAP_KEYS: [&str; 15] = [
 ];
 
 /// Point every `#/components/schemas/{old}` `$ref` in a schema position inside
-/// `value` at `renames[old]`. `value` is a document, a `paths` object or a
-/// component map; example / default / enum data is left as written.
+/// `value` at `renames[old]`. `value` is a component map or a `paths` object
+/// (its keys are names, not keywords); a whole OpenAPI document goes through
+/// [`rewrite_document_refs`], since its root is a keyword object (`webhooks`
+/// would otherwise lose its names). Example / default / enum data is left as
+/// written.
 pub fn rewrite_schema_refs(value: &mut serde_json::Value, renames: &BTreeMap<String, String>) {
     rewrite_refs(value, renames, true);
 }

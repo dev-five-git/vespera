@@ -447,6 +447,14 @@ pub fn collect_metadata_from_files<'a>(
                 // `#[cfg(..)]`: compiled out, or expanded after `vespera!`.
                 // rustc never reads a compiled-out file, so an unparsable one
                 // contributes nothing.
+                //
+                // Only the file's top-level handlers are recorded here. An
+                // inline `mod { .. }` handler is skipped WITHOUT the
+                // inline-module rejection that an ungated file gets
+                // (`module_scope::inline_mod_route`): the gate may compile the
+                // whole file out, and an error would fire for a build that
+                // never reads it. Pinned by `tests_inline_cfg`; see the
+                // inline-module rule in `module_scope`.
                 if let Some(file_ast) = parsed {
                     push_parsed_routes(
                         &mut metadata,
@@ -494,6 +502,8 @@ pub fn collect_metadata_from_files<'a>(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_inline_cfg;
 #[cfg(test)]
 mod tests_inner_cfg;
 #[cfg(test)]
