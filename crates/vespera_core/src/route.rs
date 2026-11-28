@@ -359,22 +359,14 @@ impl<'de> serde::de::Visitor<'de> for StrictValueVisitor {
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         use serde::de::Error as _;
-        use serde_json::map::Entry;
 
         let mut object = serde_json::Map::new();
         while let Some(key) = map.next_key::<String>()? {
             let StrictValue(value) = map.next_value()?;
-            match object.entry(key) {
-                Entry::Vacant(slot) => {
-                    slot.insert(value);
-                }
-                Entry::Occupied(slot) => {
-                    return Err(A::Error::custom(format!(
-                        "duplicate field `{}`",
-                        slot.key()
-                    )));
-                }
+            if object.contains_key(&key) {
+                return Err(A::Error::custom(format!("duplicate field `{key}`")));
             }
+            object.insert(key, value);
         }
         Ok(serde_json::Value::Object(object))
     }

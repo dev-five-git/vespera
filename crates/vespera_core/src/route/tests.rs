@@ -644,3 +644,17 @@ fn strict_value_refuses_a_nested_repeated_key() {
         .unwrap_or_default();
     assert!(error.contains("duplicate field `b`"), "{error}");
 }
+
+/// The visitor's `expecting` text (it names the expected shape in every
+/// type-mismatch error a derived or buffered read reports).
+#[test]
+fn strict_value_visitor_describes_what_it_expects() {
+    let error = <serde_json::Error as serde::de::Error>::invalid_type(
+        serde::de::Unexpected::Bool(true),
+        &StrictValueVisitor,
+    );
+    assert!(
+        error.to_string().contains("expected any JSON value"),
+        "{error}"
+    );
+}
