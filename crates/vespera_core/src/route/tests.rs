@@ -444,6 +444,11 @@ fn rejection<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> String
 #[case::request_body(rejection::<RequestBody>, serde_json::json!({"$ref": "#/components/requestBodies/Body", "content": {}}), "RequestBody")]
 #[case::parameter(rejection::<Parameter>, serde_json::json!({"$ref": "#/components/parameters/Id"}), "Parameter")]
 #[case::parameter_with_fields(rejection::<Parameter>, serde_json::json!({"$ref": "#/components/parameters/Id", "name": "id", "in": "path"}), "Parameter")]
+#[case::media_type(rejection::<MediaType>, serde_json::json!({"$ref": "#/components/schemas/Body"}), "MediaType")]
+#[case::media_type_with_schema(rejection::<MediaType>, serde_json::json!({"$ref": "#/components/schemas/Body", "schema": {"type": "string"}}), "MediaType")]
+#[case::encoding(rejection::<Encoding>, serde_json::json!({"$ref": "#/components/encodings/Part"}), "Encoding")]
+#[case::operation(rejection::<Operation>, serde_json::json!({"$ref": "#/paths/~1pets/get"}), "Operation")]
+#[case::operation_with_responses(rejection::<Operation>, serde_json::json!({"$ref": "#/paths/~1pets/get", "responses": {"200": {"description": "ok"}}}), "Operation")]
 #[case::security_scheme(rejection::<SecurityScheme>, serde_json::json!({"$ref": "#/components/securitySchemes/Auth"}), "SecurityScheme")]
 #[case::security_scheme_with_type(rejection::<SecurityScheme>, serde_json::json!({"$ref": "#/components/securitySchemes/Auth", "type": "http", "scheme": "bearer"}), "SecurityScheme")]
 fn reference_object_in_an_inline_only_position_is_rejected(
@@ -490,4 +495,19 @@ fn inline_security_scheme_without_a_reference_still_loads() {
     let json = serde_json::json!({"type": "http", "scheme": "bearer"});
     let scheme: SecurityScheme = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(serde_json::to_value(&scheme).unwrap(), json);
+}
+
+/// Round 44 (CJ-L1): a `$ref` nested in a `content` entry or a
+/// `get` operation used to load as `{}` (the schema or the whole operation
+/// was lost); it is now refused like every other inline-only position.
+#[test]
+fn nested_reference_objects_in_media_type_and_operation_are_refused() {
+    let content = serde_json::from_value::<RequestBody>(serde_json::json!({
+        "content": {"application/json": {"$ref": "#/components/schemas/Body"}}
+    }));
+    assert!(content.is_err(), "a MediaType $ref must be refused");
+    let get = serde_json::from_value::<PathItem>(serde_json::json!({
+        "get": {"$ref": "#/paths/~1pets/get"}
+    }));
+    assert!(get.is_err(), "an Operation $ref must be refused");
 }

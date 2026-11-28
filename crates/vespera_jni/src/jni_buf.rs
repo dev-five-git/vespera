@@ -26,10 +26,10 @@ use jni::sys::{jarray, jbyte, jsize};
 /// Read `arr[0..len]` into a fresh `Vec<u8>` of length `len`, skipping
 /// the zero-fill that `get_region` / `convert_byte_array` pay.
 ///
-/// On any pending JNI exception (e.g. the array was concurrently shrunk
-/// so the region is out of bounds) the exception is cleared and an
-/// `Err` is returned with the `Vec` left **empty** — uninitialised bytes
-/// are never observable.
+/// A pending JNI exception (reachable when `len` runs past the end of the
+/// array: `GetByteArrayRegion` then throws and copies nothing) is cleared
+/// and an `Err` is returned. No `Vec` comes back with the error (it is
+/// dropped before `set_len`), so uninitialised bytes are never observable.
 pub fn read_byte_array_region(
     env: &mut jni::Env<'_>,
     arr: &JByteArray<'_>,
@@ -107,10 +107,10 @@ fn fill_from_java(
     //   table and invoking `GetByteArrayRegion` mirrors jni's own
     //   `convert_byte_array` (and `daemon_env`'s raw VM calls): the
     //   function-table entries are non-null `extern "system"` pointers.
-    // * `array` is a live `byte[]` local/global reference; `[0, len)` is
-    //   in bounds because callers pass either the array length (buffered
-    //   path) or the exact positive `InputStream.read(byte[])` count after
-    //   checking it does not exceed the fixed streaming buffer length.
+    // * `array` is a live `byte[]` local/global reference. `[0, len)` is
+    //   not trusted to be in bounds: an out-of-range region makes the JVM
+    //   throw `ArrayIndexOutOfBoundsException` without writing to `dst`,
+    //   and the `exception_check` below turns that into `Err`.
     // * `dst` is `fill_spare`'s reserved-but-uninitialised capacity of at
     //   least `len` bytes.  Only a raw `*mut jbyte` is passed to JNI — no
     //   `&mut [i8]` over uninitialised memory is created.  `u8` and `jbyte`

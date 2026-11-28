@@ -117,13 +117,25 @@ pub(super) fn truncate_reflected_value(value: &str) -> std::borrow::Cow<'_, str>
 /// an error message or the envelope `path` (longer names end in `…`).
 pub(super) const MAX_REFLECTED_FIELD_NAME_CHARS: usize = 64;
 
+/// Whether [`write_printable`] escapes `c`: control characters, bidi
+/// overrides and isolates, zero-width / directional marks and the line and
+/// paragraph separators, which would otherwise reorder or hide the text
+/// around them in a log line or a rendered error.
+fn needs_escape(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
 /// Write at most `max_chars` of `text`, escaping control characters
 /// (`\n`, `\u{1b}`, …) so a reflected value cannot forge log lines or
 /// terminal escapes, and appending `…` when it was cut.
 fn write_printable(f: &mut fmt::Formatter<'_>, text: &str, max_chars: usize) -> fmt::Result {
     let mut chars = text.chars();
     for c in chars.by_ref().take(max_chars) {
-        if c.is_control() {
+        if needs_escape(c) {
             write!(f, "{}", c.escape_default())?;
         } else {
             f.write_char(c)?;

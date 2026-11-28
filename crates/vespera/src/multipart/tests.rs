@@ -407,6 +407,9 @@ fn test_typed_multipart_deref_mut() {
 #[case::exactly_the_cap(&"n".repeat(64), &"n".repeat(64))]
 #[case::over_the_cap(&"가".repeat(500), &format!("{}…", "가".repeat(64)))]
 #[case::control_chars("a\r\nInjected: 1\u{1b}[31m", "a\\r\\nInjected: 1\\u{1b}[31m")]
+#[case::bidi_override("\u{202E}exe.txt", "\\u{202e}exe.txt")]
+#[case::bidi_isolate("a\u{2066}b\u{2069}", "a\\u{2066}b\\u{2069}")]
+#[case::zero_width_and_separators("a\u{200B}b\u{2028}c\u{2029}", "a\\u{200b}b\\u{2028}c\\u{2029}")]
 fn reflected_field_name_is_bounded_and_printable(#[case] name: &str, #[case] shown: &str) {
     let err = TypedMultipartError::UnknownField {
         field_name: name.to_owned(),
