@@ -589,13 +589,15 @@ fn some_value(
         Some(value_type) => Some((
             field.clone(),
             SchemaConstraints {
-                value_type: Some(SchemaValueType(option_inner(&value_type.0)?.clone())),
+                value_type: Some(SchemaValueType(
+                    option_inner(strip_type_groups(&value_type.0))?.clone(),
+                )),
                 ..constraints.clone()
             },
         )),
         None => Some((
             syn::Field {
-                ty: option_inner(&field.ty)?.clone(),
+                ty: option_inner(strip_type_groups(&field.ty))?.clone(),
                 ..field.clone()
             },
             constraints.clone(),

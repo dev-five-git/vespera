@@ -5,15 +5,24 @@ use std::{borrow::Borrow, collections::HashSet, hash::Hash};
 
 /// `Map` through a `serde_json` segment anywhere before it (`serde_json::Map`,
 /// `vespera::serde_json::Map`, `::serde_json::Map`, and the `serde_json::map::Map`
-/// module path): the object type.
-pub(super) fn is_serde_json_map_path(path: &syn::Path) -> bool {
-    path.segments.last().is_some_and(|last| last.ident == "Map")
-        && path
-            .segments
-            .iter()
-            .rev()
-            .skip(1)
-            .any(|segment| segment.ident == "serde_json")
+/// module path): the object type. A bare `Map` (the `use serde_json::Map;`
+/// spelling) is the same object type unless it names a known component schema,
+/// as the bare `Value` of [`is_json_value_path`] does.
+pub(super) fn is_serde_json_map_path(
+    path: &syn::Path,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+) -> bool {
+    if path.segments.last().is_none_or(|last| last.ident != "Map") {
+        return false;
+    }
+    if path.segments.len() == 1 {
+        return !known_schemas.contains("Map");
+    }
+    path.segments
+        .iter()
+        .rev()
+        .skip(1)
+        .any(|segment| segment.ident == "serde_json")
 }
 
 /// `serde_json::Value` under any of its names:

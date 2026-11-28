@@ -270,6 +270,7 @@ fn collect_leaf_custom_types(ty: &Type) -> Vec<(Type, String)> {
     if segment.ident == "Vec"
         || segment.ident == "VecDeque"
         || segment.ident == "LinkedList"
+        || segment.ident == "BinaryHeap"
         || segment.ident == "Option"
         || segment.ident == "Box"
         || segment.ident == "Arc"

@@ -43,7 +43,7 @@
 use syn::{Attribute, Expr, ExprLit, ExprUnary, Lit, Type, meta::ParseNestedMeta};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
-use super::schema_attrs::{SchemaConstraints, expr_to_f64};
+use super::schema_attrs::{SchemaConstraints, expr_to_f64, outward_bound};
 use crate::parser::type_groups::strip_type_groups;
 use crate::schema_macro::type_utils::{first_generic_type_arg, last_path_segment, option_inner};
 
@@ -214,19 +214,23 @@ fn parse_range_arg(rules: &mut GardeRules, arg: &ParseNestedMeta<'_>) -> syn::Re
     let is_equal = arg.path.is_ident("equal");
     // A bound that is not a finite literal (`1e999` overflows to infinity)
     // is never documented: a non-finite number cannot be serialized.
-    let value = expr_to_f64(strip_groups(arg.value()?.parse()?))
+    let expr = strip_groups(arg.value()?.parse()?);
+    let value = expr_to_f64(expr.clone())
         .ok()
         .filter(|value| value.is_finite());
     // Garde applies every `range` rule (each is a separate check), so the
     // tightest literal bound wins: the larger minimum, the smaller maximum. A
     // non-literal or non-finite bound has no usable static value and leaves
-    // the earlier one alone.
+    // the earlier one alone. An inexact integer literal is rounded outward, so
+    // the documented bound never excludes a value the Rust bound allows.
     if let Some(value) = value {
         if is_min || is_equal {
-            rules.minimum = Some(rules.minimum.map_or(value, |min| min.max(value)));
+            let minimum = outward_bound(&expr, value, false);
+            rules.minimum = Some(rules.minimum.map_or(minimum, |min| min.max(minimum)));
         }
         if is_max || is_equal {
-            rules.maximum = Some(rules.maximum.map_or(value, |max| max.min(value)));
+            let maximum = outward_bound(&expr, value, true);
+            rules.maximum = Some(rules.maximum.map_or(maximum, |max| max.min(maximum)));
         }
     }
     Ok(())

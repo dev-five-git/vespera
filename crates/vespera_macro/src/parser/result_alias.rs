@@ -62,6 +62,9 @@ use crate::{
 /// How many alias-of-alias levels are followed before giving up.
 const MAX_ALIAS_DEPTH: usize = 8;
 
+/// How many renamed-import hops [`find_alias`] follows before giving up.
+const MAX_RENAME_DEPTH: usize = 32;
+
 /// Idents that are never user aliases (axum response wrappers handled by the
 /// response parser). `Result` is special-cased: only a one-argument `Result<T>`
 /// may be a user alias (`type Result<T> = std::result::Result<T, AppError>`).
@@ -155,7 +158,9 @@ mod expansion;
 mod imports;
 pub use expansion::expand_return_type_alias;
 use expansion::has_alias_position;
-use imports::{declares_mod, glob_declares_module, imported_nominal, reexported_alias};
+use imports::{
+    declares_mod, glob_declares_module, imported_nominal, reexported_alias, renamed_import,
+};
 
 /// Identifies one alias definition: its tokens, its file (`None` for the
 /// handler's own, already parsed file) and the inline module path inside it.
@@ -384,7 +389,13 @@ fn find_alias<'a>(
     qualifier: Option<&Qualifier>,
     scope: Option<&Scope<'a>>,
     src_dir: Option<&Path>,
+    depth: usize,
 ) -> Option<(syn::ItemType, NextScope<'a>)> {
+    // A rename chain that never ends (`use self::A as B; use self::B as A;`) is
+    // unresolvable, as rustc reports it: stop instead of recursing forever.
+    if depth > MAX_RENAME_DEPTH {
+        return None;
+    }
     if qualifier == Some(&Qualifier::Super)
         && let Some(found) = scope.and_then(|scope| inline_parent_alias(scope, name))
     {
@@ -412,7 +423,7 @@ fn find_alias<'a>(
         {
             // `use self::ApiResult as Api;` has no qualifier (`self` names this
             // module): the original is looked up here like `ApiResult` itself.
-            return find_alias(&original, parent.as_ref(), Some(scope), src_dir);
+            return find_alias(&original, parent.as_ref(), Some(scope), src_dir, depth + 1);
         }
         match import_kind(items, name) {
             // `use axum::response::Result;` — the name is another crate's
@@ -466,7 +477,7 @@ fn find_alias<'a>(
             && let Some(scope) = scope
             && let Some((original, parent)) = reexported_alias(qualifier, name, scope, src_dir)
         {
-            return find_alias(&original, Some(&parent), Some(scope), src_dir);
+            return find_alias(&original, Some(&parent), Some(scope), src_dir, depth + 1);
         }
         // `super::` never names the handler module's own alias: with only
         // that one left, the type is not expanded. An unresolved chain names
@@ -701,38 +712,6 @@ fn glob_parent_entries(items: &[syn::Item]) -> Vec<(Qualifier, bool)> {
         }
     }
     out
-}
-
-/// The item a `use` among `items` imports under another name (`use
-/// crate::error::Result as AppResult;` → `Result`, from `crate::error`), with
-/// the module it comes from (`None` for `self`). `None` without such a rename
-/// (`X as X` is none).
-fn renamed_import(items: &[syn::Item], name: &str) -> Option<(String, Option<Qualifier>)> {
-    fn walk(
-        tree: &syn::UseTree,
-        parent: Option<&syn::Ident>,
-        nested: bool,
-        name: &str,
-    ) -> Option<(String, Option<Qualifier>)> {
-        match tree {
-            syn::UseTree::Path(path) => walk(&path.tree, Some(&path.ident), parent.is_some(), name),
-            syn::UseTree::Rename(rename) if rename.rename == name && rename.ident != name => {
-                Some((
-                    rename.ident.to_string(),
-                    parent.and_then(|parent| import_qualifier(parent, nested)),
-                ))
-            }
-            syn::UseTree::Group(group) => group
-                .items
-                .iter()
-                .find_map(|tree| walk(tree, parent, nested, name)),
-            syn::UseTree::Rename(_) | syn::UseTree::Name(_) | syn::UseTree::Glob(_) => None,
-        }
-    }
-    items.iter().find_map(|item| match item {
-        syn::Item::Use(item_use) => walk(&item_use.tree, None, false, name),
-        _ => None,
-    })
 }
 
 /// Where a plain `use` among `items` imports `name` from: the module

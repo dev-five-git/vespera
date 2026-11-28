@@ -8,6 +8,7 @@ use super::schema::{
     is_builtin_openapi_type, is_external_crate_root, lookup_key, parse_type_to_schema_ref,
 };
 use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
+use crate::parser::type_groups::ungroup_return;
 
 /// Unwrap Json<T> to get T
 /// Handles both Json<T> and `vespera::axum::Json`<T> by checking the last segment.
@@ -441,10 +442,14 @@ fn success_key(
     }
 }
 
-/// `std::convert::Infallible` (by its last segment) or the never type `!`:
-/// an error type no value inhabits.
+/// An error type that documents no error response: `std::convert::Infallible`
+/// (by its last segment) or the never type `!` (no value inhabits it), and the
+/// unit type `()`, which axum answers as an empty `200 OK` (`IntoResponse for
+/// ()`), not as an error.
 fn is_infallible(ty: &Type) -> bool {
-    matches!(ty, Type::Never(_)) || last_ident_is(ty, "Infallible")
+    matches!(ty, Type::Never(_))
+        || last_ident_is(ty, "Infallible")
+        || matches!(ty, Type::Tuple(tuple) if tuple.elems.is_empty())
 }
 
 fn insert_success_response(
@@ -479,6 +484,8 @@ pub fn parse_return_type(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> BTreeMap<String, Response> {
+    // A `$t:ty` fragment or `(T)` at any depth is the type it wraps.
+    let return_type = &ungroup_return(return_type);
     let mut responses = BTreeMap::new();
     let ReturnType::Type(_, ty) = return_type else {
         // No return type - just 200 with no content
@@ -521,7 +528,8 @@ fn insert_error_response(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) {
-    // `Result<T, Infallible>` / `Result<T, !>` never takes the error side.
+    // `Result<T, Infallible>` / `Result<T, !>` / `Result<T, ()>` never takes the
+    // error side.
     if is_infallible(err_ty) {
         return;
     }

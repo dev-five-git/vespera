@@ -805,13 +805,16 @@ fn one_sided_codec(attrs: &[syn::Attribute]) -> bool {
     codec.serialize != codec.deserialize && extract_schema_constraints(attrs).value_type.is_none()
 }
 
-/// The field's type (or its `value_type`) has a different schema per side.
+/// The schema the field documents differs per side. A `value_type` decides it
+/// alone (the Rust type is not read at all); `#[schema(any)]` documents `{}` on
+/// both sides; otherwise the field's own type decides.
 fn field_type_differs(field: &syn::Field, flat: &FlatKinds) -> bool {
     let local = |path: &syn::Path| flat.claims(path);
-    type_view_differs(&field.ty, &local)
-        || extract_schema_constraints(&field.attrs)
-            .value_type
-            .is_some_and(|value_type| type_view_differs(&value_type.0, &local))
+    let constraints = extract_schema_constraints(&field.attrs);
+    constraints.value_type.as_ref().map_or_else(
+        || !constraints.any_decides() && type_view_differs(&field.ty, &local),
+        |value_type| type_view_differs(&value_type.0, &local),
+    )
 }
 
 /// Whether `ty` names a std type whose schema differs per side:
@@ -958,3 +961,6 @@ mod tests;
 mod tests_external;
 #[cfg(test)]
 mod tests_groups;
+
+#[cfg(test)]
+mod tests_field_type;

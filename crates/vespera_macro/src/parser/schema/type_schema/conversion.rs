@@ -98,7 +98,8 @@ pub const fn is_builtin_openapi_type(ident: &str) -> bool {
         | b"PathBuf" | b"Url"
         // Wrappers / std container types handled BEFORE the leaf match
         // (transparent for schema OR mapped to array/object via generic args).
-        | b"Vec" | b"VecDeque" | b"LinkedList" | b"HashSet" | b"BTreeSet" | b"Option"
+        | b"Vec" | b"VecDeque" | b"LinkedList" | b"BinaryHeap" | b"HashSet" | b"BTreeSet"
+        | b"Option"
         | b"Box" | b"Arc" | b"Rc" | b"Cow"
         | b"HashMap" | b"BTreeMap"
         // std::num::NonZero integers (generic + per-width aliases)
@@ -324,14 +325,18 @@ fn parse_type_impl(
                             return inner_schema;
                         }
                     }
-                    "Vec" | "VecDeque" | "LinkedList" | "HashSet" | "BTreeSet" | "Option" => {
+                    "Vec" | "VecDeque" | "LinkedList" | "BinaryHeap" | "HashSet" | "BTreeSet"
+                    | "Option" => {
                         if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
                             let inner_schema = parse_type_to_schema_ref(
                                 inner_ty,
                                 known_schemas,
                                 struct_definitions,
                             );
-                            if matches!(ident_str.as_str(), "Vec" | "VecDeque" | "LinkedList") {
+                            if matches!(
+                                ident_str.as_str(),
+                                "Vec" | "VecDeque" | "LinkedList" | "BinaryHeap"
+                            ) {
                                 return SchemaRef::Inline(Box::new(Schema::array(inner_schema)));
                             }
                             // A set serializes unique items, but serde reads
@@ -475,7 +480,7 @@ fn parse_type_impl(
                 // `serde_json::Value` accepts any JSON value → `{}`.
                 return SchemaRef::Inline(Box::default());
             }
-            if is_serde_json_map_path(path) {
+            if is_serde_json_map_path(path, known_schemas) {
                 // `serde_json::Map<String, V>` is a JSON object of any members.
                 return SchemaRef::Inline(Box::new(Schema {
                     additional_properties: Some(AdditionalProperties::Bool(true)),
@@ -569,9 +574,9 @@ fn parse_type_impl(
                 "NonZeroU128" | "NonZeroUsize" => Some(non_zero_unsigned(None, None)),
                 // Standard library types that should not be referenced
                 // Note: HashMap and BTreeMap are handled above in generic types
-                "Vec" | "VecDeque" | "LinkedList" | "HashSet" | "BTreeSet" | "Option" | "Box"
-                | "Arc" | "Rc" | "Cow" | "NonZero" | "Result" | "Json" | "Path" | "Query"
-                | "Header" => {
+                "Vec" | "VecDeque" | "LinkedList" | "BinaryHeap" | "HashSet" | "BTreeSet"
+                | "Option" | "Box" | "Arc" | "Rc" | "Cow" | "NonZero" | "Result" | "Json"
+                | "Path" | "Query" | "Header" => {
                     // These are not schema types (and without arguments
                     // carry no payload type): any value.
                     Some(SchemaRef::Inline(Box::default()))
@@ -706,9 +711,12 @@ fn parse_type_impl(
                         for default in defaults.iter().skip(concrete_owned.len()) {
                             let Some(default) = default else { break };
                             let given: Vec<&Type> = concrete_owned.iter().collect();
+                            // Consts first, as for the explicit arguments below: a type
+                            // argument placed here must not be rewritten by a const.
+                            let sized = substitute_const_type(default, &const_exprs);
                             let filled =
-                                substitute_type(default, &generic_params[..given.len()], &given);
-                            concrete_owned.push(substitute_const_type(&filled, &const_exprs));
+                                substitute_type(&sized, &generic_params[..given.len()], &given);
+                            concrete_owned.push(filled);
                         }
                         let concrete_types: Vec<&Type> = concrete_owned.iter().collect();
 

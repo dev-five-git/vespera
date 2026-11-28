@@ -129,3 +129,53 @@ fn arm_patterns(tokens: proc_macro2::TokenStream, out: &mut Vec<String>) {
         }
     }
 }
+
+/// `BinaryHeap<T>` is a std sequence like `VecDeque` / `LinkedList`: a builtin
+/// that documents an array of its element (M44-MR4-1, round 44). Without the
+/// arm it fell through to an unknown `$ref`, and the leaf assertion did not
+/// exempt it either.
+#[test]
+fn binary_heap_is_a_builtin_array_of_its_element() {
+    use std::collections::{HashMap, HashSet};
+
+    use vespera_core::schema::{SchemaRef, SchemaType};
+
+    use super::parse_type_to_schema_ref;
+
+    assert!(is_builtin_openapi_type("BinaryHeap"));
+    let ty: syn::Type = syn::parse_str("BinaryHeap<u32>").unwrap();
+    let known: HashSet<String> = HashSet::new();
+    let defs: HashMap<String, String> = HashMap::new();
+    let SchemaRef::Inline(schema) = parse_type_to_schema_ref(&ty, &known, &defs) else {
+        panic!("BinaryHeap<u32> is an inline array");
+    };
+    assert_eq!(schema.schema_type, Some(SchemaType::Array));
+    let Some(SchemaRef::Inline(items)) = schema.items else {
+        panic!("items is the inline u32 schema");
+    };
+    assert_eq!(items.schema_type, Some(SchemaType::Integer));
+}
+
+/// Round 44: a bare `Map<K, V>` (`use serde_json::Map;`) is the JSON object the
+/// qualified spelling is, unless it names a known component schema (L44-MR4-2).
+#[test]
+fn bare_map_is_a_json_object_unless_it_is_a_known_schema() {
+    use std::collections::{HashMap, HashSet};
+
+    use vespera_core::schema::{SchemaRef, SchemaType};
+
+    use super::parse_type_to_schema_ref;
+
+    let ty: syn::Type = syn::parse_str("Map<String, u8>").unwrap();
+    let defs: HashMap<String, String> = HashMap::new();
+    let SchemaRef::Inline(schema) = parse_type_to_schema_ref(&ty, &HashSet::<String>::new(), &defs)
+    else {
+        panic!("a bare Map is an inline object");
+    };
+    assert_eq!(schema.schema_type, Some(SchemaType::Object));
+    let known: HashSet<String> = HashSet::from(["Map".to_string()]);
+    assert!(matches!(
+        parse_type_to_schema_ref(&ty, &known, &defs),
+        SchemaRef::Ref(_)
+    ));
+}

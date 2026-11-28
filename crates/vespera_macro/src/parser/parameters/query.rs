@@ -20,7 +20,7 @@ use crate::{
             parse_type_to_schema_ref, request_view::component_of_input,
             schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
         },
-        type_groups::strip_type_groups,
+        type_groups::{strip_type_groups, unwrap_option},
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type, option_inner},
 };
@@ -42,7 +42,8 @@ pub(super) fn parse_query_struct_extractor(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
-    let (query_ty, optional) = option_inner(ty).map_or((ty, false), |inner| (inner, true));
+    let (query_ty, optional) =
+        option_inner(strip_type_groups(ty)).map_or((ty, false), |inner| (inner, true));
     let (inner_ty, optional_query) = query_inner(query_ty)?;
     // A `from = "E"` / `transparent` chain ending in a non-struct (an enum)
     // is documented by [`parse_query_extractor`] instead.
@@ -69,7 +70,7 @@ pub(super) fn parse_query_struct_extractor(
 /// `T` of a `Query<T>` / `OptionalQuery<T>` type, and whether it is the
 /// optional `axum_extra::extract::OptionalQuery`.
 fn query_inner(ty: &Type) -> Option<(&Type, bool)> {
-    let Type::Path(type_path) = ty else {
+    let Type::Path(type_path) = strip_type_groups(ty) else {
         return None;
     };
     let segment = type_path.path.segments.last()?;
@@ -102,7 +103,8 @@ pub(super) fn parse_query_extractor(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
-    let (query_ty, outer_optional) = option_inner(ty).map_or((ty, false), |inner| (inner, true));
+    let (query_ty, outer_optional) =
+        option_inner(strip_type_groups(ty)).map_or((ty, false), |inner| (inner, true));
     let (inner_ty, optional_query) = query_inner(query_ty)?;
     let optional = outer_optional || optional_query;
     let inner_ty = &deserialized_source(inner_ty, struct_definitions);
@@ -240,7 +242,7 @@ fn collect_query_struct_parameters(
         let is_optional = is_option_type(field_ty);
 
         if extract_flatten(&field.attrs) {
-            let flattened_ty = option_inner(field_ty).unwrap_or(field_ty);
+            let flattened_ty = unwrap_option(field_ty);
             let first_flattened = parameters.len();
             collect_query_struct_parameters(
                 flattened_ty,
