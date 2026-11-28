@@ -10,7 +10,7 @@ Gradle plugin `kr.devfive.vespera-bridge` (Maven Central / Plugin Portal: `kr.de
 | `packageName` / `libName` | derived | `cargo build -p` spec / custom `[lib] name` |
 | `cargoRoot`, `targetDir`, `cargoProfile` | `<cargoRoot>/target`, `release` | where the cdylib is read from (leave both locations unset to bundle only `extraNativeLibs`) |
 | `autoBuildCargo` | `false` | run `cargoBuild` before `bundleNativeLib` |
-| `targets` | empty | extra cross builds: platform → Rust triple |
+| `targets` | empty | extra cross builds: platform → Rust triple. Needs `cargoRoot` or `targetDir` to locate the libraries: with neither set, a non-empty `targets` fails the build (`vespera.targets needs vespera.cargoRoot or vespera.targetDir`) instead of being silently left out of the jar |
 | `extraNativeLibs` | unset | prebuilt `native/<platform>/<lib>` merged into the app jar (alone, without `cargoRoot` / `targetDir`: the only libraries bundled) |
 | `bundleNative` | `true` | `false`: `processResources` bundles nothing, not even `extraNativeLibs` (the app takes its library from native jars) |
 | `nativeJarPlatforms` | empty | platforms to package as classifier jars (`nativeJar<Platform>`, `nativeJars`) |

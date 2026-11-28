@@ -428,6 +428,40 @@ class VesperaOpenApiMergerTest {
         assertEquals(List.of("vespera_bearer"), List.copyOf(callback.getSecurity().get(0).keySet()));
     }
 
+    /** Reusable path items and callbacks in {@code components} are merged, so their requirements follow the rename too. */
+    private static final String COMPONENT_SECURITY_SPEC = """
+            {
+              "openapi": "3.1.0",
+              "info": {"title": "Rust", "version": "1.0.0"},
+              "paths": {},
+              "components": {
+                "securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}},
+                "pathItems": {"Shared": {"get": {"security": [{"bearer": ["read"]}],
+                  "responses": {"200": {"description": "ok"}}}}},
+                "callbacks": {"onEvent": {"{$request.body#/url}": {"post": {"security": [{"bearer": []}],
+                  "responses": {"200": {"description": "cb"}}}}}}
+              }
+            }
+            """;
+
+    @Test
+    void componentPathItemAndCallbackSecurityFollowASchemeRename() {
+        OpenAPI doc = springdocDocument();
+        doc.getComponents().addSecuritySchemes("bearer", new io.swagger.v3.oas.models.security.SecurityScheme()
+                .type(io.swagger.v3.oas.models.security.SecurityScheme.Type.HTTP)
+                .scheme("bearer").bearerFormat("JWT"));
+
+        merger(app -> bytes(COMPONENT_SECURITY_SPEC), List.of("_default")).customise(doc);
+
+        assertNotNull(doc.getComponents().getSecuritySchemes().get("vespera_bearer"));
+        Operation shared = doc.getComponents().getPathItems().get("Shared").getGet();
+        assertEquals(List.of("vespera_bearer"), List.copyOf(shared.getSecurity().get(0).keySet()));
+        assertEquals(List.of("read"), shared.getSecurity().get(0).get("vespera_bearer"));
+        Operation callback = doc.getComponents().getCallbacks().get("onEvent")
+                .get("{$request.body#/url}").getPost();
+        assertEquals(List.of("vespera_bearer"), List.copyOf(callback.getSecurity().get(0).keySet()));
+    }
+
     /** A component whose name needs percent-encoding in a {@code $ref}, as Rust writes it. */
     private static final String ENCODED_NAME_SPEC = """
             {

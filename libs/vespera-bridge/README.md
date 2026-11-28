@@ -306,7 +306,11 @@ A path outside `include-patterns`, or matching an `exclude-patterns` entry, is
 **not mapped to the proxy at all**: Spring MVC carries on with its other handler
 mappings — other controllers, static resources, and finally its own `404` —
 exactly as if the proxy did not exist. With `cors=rust`, preflights for those
-paths are left to Spring too. An invalid pattern fails startup. With the
+paths are left to Spring too. An invalid pattern fails startup. A set
+`include-patterns` with no non-blank entry (for example `${PROXY_INCLUDE:}` with the
+variable unset, or `include-patterns: [""]`) fails startup too: it never silently
+becomes `/**`. Leave the property unset to proxy the whole URL space. Blank
+`exclude-patterns` entries are ignored, since an empty exclusion removes nothing. With the
 defaults the proxy's `@RequestMapping("/**")` is left untouched; otherwise
 `VesperaProxyPathMappings` re-registers it with the include patterns plus an
 exclusion condition once the context's singletons are initialised. With springdoc's Swagger UI configured, its paths are excluded implicitly (see [springdoc-openapi](#springdoc-openapi-swagger-ui)).
@@ -1327,6 +1331,8 @@ WebFlux is unaffected: it only parses multipart data when something calls `excha
 ### Client address, scheme and servlet path
 
 The proxy forwards the servlet request's remote address (`ip:port`, IPv6 bracketed) and scheme (`http` / `https`) as the optional wire fields `remote_addr` / `scheme`. Rust handlers read them with `ConnectInfo<SocketAddr>` and `Extension<http::uri::Scheme>` exactly like under `axum::serve` (configure Tomcat `RemoteIpValve` / `server.forward-headers-strategy` so they reflect the real client behind a load balancer). The forwarded path is application-relative: the context path and a prefix servlet mapping (`spring.mvc.servlet.path=/v1` → `/v1/users` arrives as `/users`) are stripped, and `;` path parameters (`;jsessionid=...`, matrix variables) are dropped from every segment. The WebFlux proxy forwards the same path: `spring.webflux.base-path` and the `;` path parameters are removed.
+
+**Trust model for `X-Forwarded-*`.** `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto` and `X-Forwarded-Port` are ordinary request headers: the proxy forwards them to Rust unchanged, next to the trusted `remote_addr` / `scheme` fields. A client can send any value for them unless something in front of the application strips or rewrites them, such as Spring's `ForwardedHeaderFilter` (`server.forward-headers-strategy`) behind a trusted load balancer, or the load balancer itself. The proxy does not change behaviour based on them. Rust handlers should take the client address from `ConnectInfo<SocketAddr>` and the scheme from `Extension<http::uri::Scheme>`, and treat the `X-Forwarded-*` headers as hints only, never as an authorization input.
 
 ### Request id
 

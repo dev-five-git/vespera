@@ -436,8 +436,12 @@ public class VesperaBridgeProperties {
         return includePatterns;
     }
 
+    /**
+     * {@code null} keeps the whole-URL-space default; a non-null list must name at least one
+     * pattern (checked at startup by {@link #proxyPathPatterns()}).
+     */
     public void setIncludePatterns(List<String> includePatterns) {
-        this.includePatterns = includePatterns == null ? new ArrayList<>() : new ArrayList<>(includePatterns);
+        this.includePatterns = includePatterns == null ? null : new ArrayList<>(includePatterns);
     }
 
     public List<String> getExcludePatterns() {
@@ -449,10 +453,10 @@ public class VesperaBridgeProperties {
     }
 
     /**
-     * {@link #includePatterns} / {@link #excludePatterns}, validated (an empty
-     * include list means {@code /**}).
+     * {@link #includePatterns} / {@link #excludePatterns}, validated (an unset
+     * include list means {@code /**}; a set one with no non-blank entry fails).
      *
-     * @throws IllegalArgumentException for an invalid pattern
+     * @throws IllegalArgumentException for an invalid pattern, or an include list naming none
      */
     ProxyPathPatterns proxyPathPatterns() {
         return new ProxyPathPatterns(includePatterns, excludePatterns);

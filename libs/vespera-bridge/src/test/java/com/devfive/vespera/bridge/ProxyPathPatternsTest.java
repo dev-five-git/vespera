@@ -174,10 +174,26 @@ class ProxyPathPatternsTest {
     }
 
     @Test
+    void blankOnlyIncludeListFailsClosedInsteadOfWideningToEverything() {
+        IllegalArgumentException blank = assertThrows(IllegalArgumentException.class,
+                () -> new ProxyPathPatterns(Arrays.asList(" ", null), null));
+        assertTrue(blank.getMessage().contains("vespera.bridge.include-patterns"));
+        assertThrows(IllegalArgumentException.class, () -> new ProxyPathPatterns(List.of(), List.of()));
+        assertThrows(IllegalArgumentException.class, () -> new ProxyPathPatterns(List.of(""), null));
+        // An unset list (null) keeps the catch-all; blank exclusions are simply ignored.
+        assertTrue(new ProxyPathPatterns(null, List.of(" ")).isDefault());
+        assertEquals(List.of("/**"), new ProxyPathPatterns(null, null).include());
+    }
+
+    @Test
+    void blankOnlyIncludePlaceholderFailsStartup() {
+        runner.withPropertyValues("vespera.bridge.include-patterns=${vespera.test.unset:}")
+                .run(ctx -> assertThat(ctx).hasFailed()
+                        .getFailure().hasStackTraceContaining("vespera.bridge.include-patterns is set but names no path pattern"));
+    }
+
+    @Test
     void patternNormalisation() {
-        ProxyPathPatterns blank = new ProxyPathPatterns(Arrays.asList(" ", null), null);
-        assertTrue(blank.isDefault());
-        assertEquals(List.of("/**"), blank.include());
         ProxyPathPatterns trimmed = new ProxyPathPatterns(List.of(" /api/** "), List.of(" /api/x "));
         assertEquals(List.of("/api/**"), trimmed.include());
         assertEquals(List.of("/api/x"), trimmed.exclude());

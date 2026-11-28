@@ -346,6 +346,10 @@ class VesperaDirectWrapperTest {
         grownCapacity.setAccessible(true);
 
         assertEquals(64 * 1024, grownCapacity.invoke(null, 1));
+        // Each doubling step is exercised, not only the first and the last: 64 KiB -> 128 KiB
+        // for a need just above the initial size, and 2 MiB -> 4 MiB for a need just above 2 MiB.
+        assertEquals(128 * 1024, grownCapacity.invoke(null, 100 * 1024));
+        assertEquals(4 * 1024 * 1024, grownCapacity.invoke(null, 2 * 1024 * 1024 + 1));
         assertEquals(4 * 1024 * 1024, grownCapacity.invoke(null, 3 * 1024 * 1024));
         // A need at the maximum is served at the maximum; larger needs never reach
         // the pool (they take the heap fallback), so no above-cap case is asserted.

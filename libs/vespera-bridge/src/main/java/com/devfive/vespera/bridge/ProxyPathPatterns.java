@@ -41,13 +41,15 @@ public final class ProxyPathPatterns {
     private final boolean catchAll;
 
     /**
-     * @param include include patterns; {@code null} or empty means {@link #DEFAULT_INCLUDE}
-     * @param exclude exclude patterns; {@code null} means none
-     * @throws IllegalArgumentException when a pattern is not a valid {@link PathPattern}
+     * @param include include patterns; {@code null} means {@link #DEFAULT_INCLUDE}. A non-null list with
+     *                no non-blank entry is rejected (fail closed: a {@code ${VAR:}} placeholder left
+     *                unset would otherwise widen the proxy to the whole URL space)
+     * @param exclude exclude patterns; {@code null} means none, blank entries are ignored
+     * @throws IllegalArgumentException when the include list names no pattern, or a pattern is not a
+     *                                  valid {@link PathPattern}
      */
     public ProxyPathPatterns(Collection<String> include, Collection<String> exclude) {
-        List<String> in = normalize(include);
-        this.include = in.isEmpty() ? DEFAULT_INCLUDE : in;
+        this.include = include == null ? DEFAULT_INCLUDE : requireIncludes(normalize(include));
         this.exclude = normalize(exclude);
         this.includePatterns = parse(this.include, "vespera.bridge.include-patterns");
         this.excludePatterns = parse(this.exclude, "vespera.bridge.exclude-patterns");
@@ -147,6 +149,16 @@ public final class ProxyPathPatterns {
             }
         }
         return List.copyOf(out);
+    }
+
+    private static List<String> requireIncludes(List<String> normalized) {
+        if (normalized.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "vespera.bridge.include-patterns is set but names no path pattern (empty or blank entries "
+                            + "only); remove the property to proxy the whole URL space (/**), or list the paths "
+                            + "the proxy owns");
+        }
+        return normalized;
     }
 
     private static List<PathPattern> parse(List<String> patterns, String property) {

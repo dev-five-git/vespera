@@ -145,6 +145,19 @@ class HeaderAppNameResolverTest {
     }
 
     @Test
+    void unknownAppMessageNeverCarriesTheRawClientValue() {
+        HeaderAppNameResolver restricted = new HeaderAppNameResolver("X-Vespera-App", List.of("public"));
+        String hostile = "adm\n[forged] " + "x".repeat(200);
+        UnknownAppException rejected =
+                assertThrows(UnknownAppException.class, () -> restricted.resolveAppName(selecting(hostile)));
+        // appName() keeps the value as selected; only the log-facing message is bounded.
+        assertEquals(hostile, rejected.appName());
+        assertFalse(rejected.getMessage().contains("forged"), rejected.getMessage());
+        assertTrue(rejected.getMessage().contains("<invalid app name of " + hostile.length() + " chars>"),
+                rejected.getMessage());
+    }
+
+    @Test
     void blankOnlyAllowlistFailsStartupInsteadOfOpeningTheProxy() {
         // ${ADMIN_APP:} with the variable unset binds to [""]: that must not
         // silently fall back to the unrestricted behaviour.

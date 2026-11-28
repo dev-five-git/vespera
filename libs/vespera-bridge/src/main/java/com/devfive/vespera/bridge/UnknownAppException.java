@@ -13,7 +13,10 @@ public class UnknownAppException extends RuntimeException {
     private final String appName;
 
     public UnknownAppException(String appName) {
-        super("vespera app '" + appName + "' is not exposed by this proxy");
+        // The message may reach logs: the raw client value (control characters, a
+        // log-forging payload, megabytes) goes through the same loggable form as every
+        // other app name in the bridge. appName() keeps the value as selected.
+        super("vespera app '" + AppNames.loggable(String.valueOf(appName)) + "' is not exposed by this proxy");
         this.appName = appName;
     }
 

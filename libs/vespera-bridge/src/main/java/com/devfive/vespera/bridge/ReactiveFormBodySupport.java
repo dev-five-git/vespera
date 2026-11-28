@@ -86,18 +86,34 @@ final class ReactiveFormBodySupport {
         }
         Charset charset = formCharset(form);
         return exchange.getFormData()
-                .map(data -> {
-                    byte[] rebuilt = encode(data, charset);
-                    return rebuilt.length > body.length ? rebuilt : body;
-                })
-                .defaultIfEmpty(body)
-                // reactor-netty rejects the second read of a body that a filter drained
-                // without parsing it as a form: no form is cached, so there is nothing to
-                // recover. Any other failure is a real read or parse error and propagates
-                // instead of forwarding a truncated body.
+                .map(data -> encode(data, charset))
+                .filter(rebuilt -> rebuilt.length > body.length)
+                // Nothing recoverable for a body that came back short (no cached form, or an empty
+                // one): a filter drained it without parsing it as a form. reactor-netty rejects the
+                // second read of such a body outright, the same outcome. Either way the body was
+                // consumed server-side, not by the client, so it is a proxy 500 with a WARN, never
+                // a 400 blaming the client's short body and never an empty forward. An unknown
+                // length (-1) that is empty is a legitimate empty body and is forwarded as it came.
+                .switchIfEmpty(Mono.defer(() -> contentLength > 0 ? formConsumed(exchange) : Mono.just(body)))
+                // Any other failure is a real read or parse error and propagates instead of
+                // forwarding a truncated body.
                 .onErrorResume(ReactiveFormBodySupport::isSecondReadRejection,
-                        noCachedForm -> Mono.just(body));
+                        noCachedForm -> formConsumed(exchange));
     }
+
+    private static Mono<byte[]> formConsumed(ServerWebExchange exchange) {
+        return Mono.error(bodyConsumed(exchange, FORM_CONSUMED_HINT, FORM_CONSUMED_WARNED, FORM_CONSUMED_MSG));
+    }
+
+    /** Body of the proxy's {@code 500} for a form body a filter drained without caching its form data. */
+    static final String FORM_CONSUMED_MSG = "vespera: the form request body was consumed before the proxy could "
+            + "forward it (a WebFilter drained it without exchange.getFormData())";
+
+    private static final String FORM_CONSUMED_HINT = "{} {}: form body was already consumed by a WebFilter before "
+            + "the vespera proxy ran, and no form data is cached to rebuild it, so it cannot be forwarded to Rust; "
+            + "answering 500. Check for a WebFilter reading the request body and exclude the proxied paths from it.";
+
+    private static final AtomicBoolean FORM_CONSUMED_WARNED = new AtomicBoolean();
 
     /** The message of reactor-netty's second-read rejection (see {@link #secondMultipartRead}). */
     private static final String SECOND_READ_REJECTED = "Rejecting additional inbound receiver";
@@ -133,18 +149,25 @@ final class ReactiveFormBodySupport {
         if (!shortRead || !isMultipart(exchange) || framedBodyless(exchange, contentLength)) {
             return body;
         }
-        String hint = "{} {}: multipart body was already consumed (exchange.getMultipartData()) before the "
-                + "vespera proxy ran, so it cannot be forwarded to Rust; answering 500. Check for a WebFilter "
-                + "reading multipart data (e.g. a CSRF token handler with setTokenFromMultipartDataEnabled(true)) "
-                + "and exclude the proxied paths from it.";
+        throw bodyConsumed(exchange, MULTIPART_CONSUMED_HINT, MULTIPART_WARNED, MULTIPART_CONSUMED_MSG);
+    }
+
+    private static final String MULTIPART_CONSUMED_HINT = "{} {}: multipart body was already consumed "
+            + "(exchange.getMultipartData()) before the vespera proxy ran, so it cannot be forwarded to Rust; "
+            + "answering 500. Check for a WebFilter reading multipart data (e.g. a CSRF token handler with "
+            + "setTokenFromMultipartDataEnabled(true)) and exclude the proxied paths from it.";
+
+    /** The one-time WARN (DEBUG afterwards) for a request body a filter consumed, and the proxy's {@code 500}. */
+    private static ResponseStatusException bodyConsumed(
+            ServerWebExchange exchange, String hint, AtomicBoolean warned, String message) {
         String method = exchange.getRequest().getMethod().name();
         String path = exchange.getRequest().getPath().value();
-        if (MULTIPART_WARNED.compareAndSet(false, true)) {
+        if (warned.compareAndSet(false, true)) {
             log.warn(hint, method, path);
         } else if (log.isDebugEnabled()) {
             log.debug(hint, method, path);
         }
-        throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, MULTIPART_CONSUMED_MSG);
+        return new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, message);
     }
 
     /**
