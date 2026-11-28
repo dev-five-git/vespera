@@ -148,7 +148,7 @@ class VesperaNativeLoaderTest {
 
     @Test
     void presentBundledResourceIsExtractedVerifiedAndRejectedOnlyAtSystemLoad() throws Exception {
-        Path temp = NativeTestTemp.reusableBase("vespera-native-loader-resource-");
+        Path temp = Files.createTempDirectory("vespera-native-loader-resource-");
         String oldVerify = System.getProperty("vespera.native.verifyExtractedDigest");
         String oldDir = System.getProperty(VesperaNativeLoader.NATIVE_DIR_PROPERTY);
         try {
@@ -486,7 +486,7 @@ class VesperaNativeLoaderTest {
 
     @Test
     void extractionIsContentAddressedAndReusedAcrossCalls() throws Exception {
-        Path base = NativeTestTemp.reusableBase("vespera-native-cas-");
+        Path base = Files.createTempDirectory("vespera-native-cas-");
         try {
             byte[] content = "pretend cdylib v1".getBytes(StandardCharsets.UTF_8);
             AtomicInteger opens = new AtomicInteger();
@@ -523,7 +523,7 @@ class VesperaNativeLoaderTest {
 
     @Test
     void corruptedCachedCopyIsReplaced() throws Exception {
-        Path base = NativeTestTemp.reusableBase("vespera-native-corrupt-");
+        Path base = Files.createTempDirectory("vespera-native-corrupt-");
         try {
             byte[] content = "good bytes".getBytes(StandardCharsets.UTF_8);
             Path target = VesperaNativeLoader.extract("native/x/demo.dll", "demo.dll", base,
@@ -544,7 +544,7 @@ class VesperaNativeLoaderTest {
 
     @Test
     void concurrentExtractionsConvergeOnOneVerifiedFile() throws Exception {
-        Path base = NativeTestTemp.reusableBase("vespera-native-race-");
+        Path base = Files.createTempDirectory("vespera-native-race-");
         ExecutorService pool = Executors.newFixedThreadPool(8);
         try {
             byte[] content = new byte[512 * 1024];
@@ -623,28 +623,42 @@ class VesperaNativeLoaderTest {
                 allow(new Principal("CREATOR OWNER"), java.util.Set.of(
                         java.nio.file.attribute.AclEntryFlag.INHERIT_ONLY), write),
                 // An app-container / capability SID: no account can log on as it.
-                allow(new Principal("S-1-15-2-1"), none, write)), trusted));
+                allow(new Principal("S-1-15-2-1"), none, write)), trusted, List.of()));
         // An unresolvable domain-account SID may log on later: its write rights count.
         String unresolved = VesperaNativeLoader.aclProblem(List.of(
                 allow(me, none, write),
-                allow(new Principal("S-1-5-21-1-2-3-1001"), none, write)), trusted);
+                allow(new Principal("S-1-5-21-1-2-3-1001"), none, write)), trusted, List.of());
         assertTrue(unresolved != null && unresolved.contains("S-1-5-21-1-2-3-1001"), unresolved);
         assertNull(VesperaNativeLoader.aclProblem(List.of(
                 allow(me, none, write),
-                allow(new Principal("S-1-5-21-1-2-3-1001"), none, read)), trusted),
+                allow(new Principal("S-1-5-21-1-2-3-1001"), none, read)), trusted, List.of()),
                 "read-only rights of an unresolved SID are fine");
+        // The same stale SID inherited from the parent (%TEMP%) is the normal state of a
+        // domain-joined machine: not refused, so the directory is still reused.
+        var stale = new Principal("S-1-5-21-1-2-3-1001");
+        var parent = List.of(allow(stale, none, write));
+        assertNull(VesperaNativeLoader.aclProblem(List.of(
+                allow(me, none, write), allow(stale, none, write)), trusted, parent),
+                "an inherited unresolved write grant is not an explicit one");
+        // Explicit on the directory (the parent grants only read) is refused.
+        assertTrue(VesperaNativeLoader.aclProblem(List.of(
+                allow(me, none, write), allow(stale, none, write)), trusted,
+                List.of(allow(stale, none, read))) != null,
+                "an unresolved write the parent grants only read is explicit");
+        // A named principal inherited with write is still refused (unchanged rule).
+        assertTrue(VesperaNativeLoader.aclProblem(List.of(allow(users, none, write)), trusted, parent) != null);
         String problem = VesperaNativeLoader.aclProblem(List.of(
-                allow(me, none, write), allow(users, none, read, append)), trusted);
+                allow(me, none, write), allow(users, none, read, append)), trusted, List.of());
         assertTrue(problem != null && problem.contains("BUILTIN\\Users"), problem);
         assertTrue(VesperaNativeLoader.aclProblem(List.of(java.nio.file.attribute.AclEntry.newBuilder()
                 .setType(java.nio.file.attribute.AclEntryType.DENY).setPrincipal(users)
-                .setPermissions(write).build()), trusted) == null, "DENY entries are ignored");
+                .setPermissions(write).build()), trusted, List.of()) == null, "DENY entries are ignored");
     }
 
     @Test
     @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
     void windowsReusesAnOwnedPrivateDirAndFallsBackWhenOthersMayWrite() throws Exception {
-        Path base = NativeTestTemp.reusableBase("vespera-native-acl-");
+        Path base = Files.createTempDirectory("vespera-native-acl-");
         try {
             VesperaNativeLoader.ExtractionDir owned = VesperaNativeLoader.prepareDir(base, "vespera-native-abc");
             assertTrue(owned.reusable(), "a fresh per-user temp dir is private");
@@ -674,6 +688,36 @@ class VesperaNativeLoaderTest {
             Files.deleteIfExists(fallback.dir());
         } finally {
             deleteTree(base);
+        }
+    }
+
+    @Test
+    void freshDirectoriesAreSweptWhenOldAndTheirFilesAreUnlocked() throws Exception {
+        Path tmp = Files.createTempDirectory("vespera-native-sweep-");
+        try {
+            long now = System.currentTimeMillis();
+            FileTime old = FileTime.fromMillis(now - VesperaNativeLoader.LEGACY_MIN_AGE_MILLIS - 1000);
+            // An old fresh directory with one copy inside (a JVM that exited).
+            Path stale = Files.createDirectories(tmp.resolve("vespera-native-4711"));
+            Path staleDll = Files.writeString(stale.resolve("demo.dll"), "x");
+            // A copy that cannot be deleted (Windows: loaded by a live JVM) stands in as a file
+            // inside a subdirectory: the delete is refused, so the directory must stay.
+            Path locked = Files.createDirectories(tmp.resolve("vespera-native-4712"));
+            Files.writeString(Files.createDirectories(locked.resolve("still-in-use")).resolve("held"), "x");
+            Path young = Files.createDirectories(tmp.resolve("vespera-native-4713"));
+            Path foreign = Files.createDirectories(tmp.resolve("vespera-native-notes"));
+            for (Path p : new Path[] {stale, staleDll, locked, foreign}) {
+                Files.setLastModifiedTime(p, old);
+            }
+
+            assertEquals(1, VesperaNativeLoader.cleanupFreshExtractions(tmp, now));
+            assertTrue(Files.notExists(stale), "the old fresh directory and its copy are removed");
+            assertTrue(Files.isDirectory(locked), "a directory that still holds something stays");
+            assertTrue(Files.isDirectory(young), "a young directory is left to its JVM");
+            assertTrue(Files.isDirectory(foreign), "a name that is not a fresh extraction is left");
+            assertEquals(0, VesperaNativeLoader.cleanupFreshExtractions(tmp.resolve("missing"), now));
+        } finally {
+            deleteTree(tmp);
         }
     }
 

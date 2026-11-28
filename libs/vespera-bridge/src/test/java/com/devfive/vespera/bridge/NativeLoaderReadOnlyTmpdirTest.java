@@ -37,7 +37,7 @@ class NativeLoaderReadOnlyTmpdirTest {
 
     @Test
     void configuredNativeDirWorksWithoutAWritableTmpdir() throws Exception {
-        Path root = NativeTestTemp.reusableBase("vespera-native-rotmp-");
+        Path root = Files.createTempDirectory("vespera-native-rotmp-");
         try {
             Path base = root.resolve("native");
             Path missingTmp = root.resolve("no-such-tmp");
