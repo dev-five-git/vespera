@@ -129,6 +129,11 @@ final class VesperaNativeLoader {
      */
     private static final Pattern LEGACY_EXTRACTION =
             Pattern.compile("vespera-\\d+\\.(dll|so|dylib)");
+    /**
+     * A per-JVM fresh directory ({@code Files.createTempDirectory("vespera-native-")}
+     * in {@code java.io.tmpdir}, used when the configured directory is not private).
+     */
+    private static final Pattern FRESH_EXTRACTION_DIR = Pattern.compile("vespera-native-\\d+");
     /** Legacy files younger than this may still be mid-load by an old JVM. */
     static final long LEGACY_MIN_AGE_MILLIS = 60L * 60L * 1000L;
 
@@ -201,8 +206,10 @@ final class VesperaNativeLoader {
         }
         loadExtracted(extracted, System::load, Files::deleteIfExists);
         try {
-            cleanupLegacyExtractions(
-                    Paths.get(System.getProperty("java.io.tmpdir")), System.currentTimeMillis());
+            Path tmp = Paths.get(System.getProperty("java.io.tmpdir"));
+            long now = System.currentTimeMillis();
+            cleanupLegacyExtractions(tmp, now);
+            cleanupFreshExtractions(tmp, now);
         } catch (InvalidPathException ignored) {
             // Best-effort cleanup; the library is already loaded.
         }
@@ -441,7 +448,8 @@ final class VesperaNativeLoader {
      * directories must be real directories (no symbolic link / junction),
      * owned by the current user, and their ACL must not grant write-like
      * rights to anyone but the owner, {@code SYSTEM} or
-     * {@code Administrators}.  Otherwise — e.g. a directory another user
+     * {@code Administrators} (see {@link #aclProblem} for the unresolved-SID
+     * rule: an inherited stale grant does not count).  Otherwise — e.g. a directory another user
      * created first under a shared {@code java.io.tmpdir} to plant a DLL — the
      * library goes into a fresh, randomly named temp directory for this JVM
      * only.
@@ -495,9 +503,28 @@ final class VesperaNativeLoader {
             throw new UnsafeDirectoryException(dir + " has no ACL to verify");
         }
         Set<UserPrincipal> trusted = trustedPrincipals(dir, owner, me);
-        String problem = aclProblem(acl.getAcl(), p -> trusted.contains(p) || isWellKnownAdmin(p));
+        String problem = aclProblem(acl.getAcl(), p -> trusted.contains(p) || isWellKnownAdmin(p),
+                parentAcl(dir));
         if (problem != null) {
             throw new UnsafeDirectoryException(dir + ": " + problem);
+        }
+    }
+
+    /**
+     * The ACL of {@code dir}'s parent, against which {@link #aclProblem} tells
+     * an inherited entry from an explicit one. An unreadable parent yields no
+     * entries, so every entry then counts as explicit (the strict reading).
+     */
+    private static List<AclEntry> parentAcl(Path dir) {
+        Path parent = dir.toAbsolutePath().getParent();
+        if (parent == null) {
+            return List.of();
+        }
+        try {
+            AclFileAttributeView view = Files.getFileAttributeView(parent, AclFileAttributeView.class);
+            return view == null ? List.of() : view.getAcl();
+        } catch (IOException | SecurityException unreadable) {
+            return List.of();
         }
     }
 
@@ -505,16 +532,25 @@ final class VesperaNativeLoader {
      * Why {@code acl} lets an untrusted principal write into the directory,
      * or {@code null}.  Inherit-only entries (which only apply to new
      * children, e.g. {@code CREATOR OWNER}), {@code DENY} entries and
-     * principals Windows cannot resolve to an account (reported as a raw
-     * {@code S-1-...} SID: deleted accounts, sandbox / capability SIDs — no
-     * user can log on as them) are ignored.
+     * app-container / capability SIDs ({@link #isCapabilitySid}, {@code S-1-15-...},
+     * no user can log on as them) are ignored.
+     *
+     * <p>A principal Windows cannot resolve to a name (a raw {@code S-1-...}
+     * SID, e.g. a domain account that is unreachable right now) is untrusted
+     * like a named one when its write-like rights are explicit on this
+     * directory. When the same grant is inherited from {@code parentAcl} (a
+     * stale SID on {@code %TEMP%} that every new child directory picks up) it is
+     * not: that is the normal state of many domain-joined machines, and
+     * refusing it would fall back to a fresh copy on every start.
      */
-    static String aclProblem(List<AclEntry> acl, Predicate<UserPrincipal> trusted) {
+    static String aclProblem(List<AclEntry> acl, Predicate<UserPrincipal> trusted,
+            List<AclEntry> parentAcl) {
         for (AclEntry entry : acl) {
             if (entry.type() != AclEntryType.ALLOW
                     || entry.flags().contains(AclEntryFlag.INHERIT_ONLY)
-                    || isUnresolvedSid(entry.principal())
-                    || trusted.test(entry.principal())) {
+                    || isCapabilitySid(entry.principal())
+                    || trusted.test(entry.principal())
+                    || (isUnresolvedSid(entry.principal()) && inheritedFrom(entry, parentAcl))) {
                 continue;
             }
             for (AclEntryPermission permission : entry.permissions()) {
@@ -542,8 +578,36 @@ final class VesperaNativeLoader {
 
     private static final String[] WELL_KNOWN_ADMINS = {"NT AUTHORITY\\SYSTEM", "BUILTIN\\Administrators"};
 
+    /** A principal Windows lists by raw SID because it resolves to no name. */
     static boolean isUnresolvedSid(UserPrincipal principal) {
         return principal.getName().startsWith("S-1-");
+    }
+
+    /**
+     * Whether {@code entry} is already granted by {@code parentAcl}: the same
+     * principal and type with at least its permissions. Windows copies an
+     * inherited entry into the child unchanged apart from its inheritance flags,
+     * and the Java API does not expose the inherited bit, so this comparison is
+     * how an inherited entry is recognised.
+     */
+    static boolean inheritedFrom(AclEntry entry, List<AclEntry> parentAcl) {
+        for (AclEntry parent : parentAcl) {
+            if (parent.type() == entry.type()
+                    && parent.principal().getName().equals(entry.principal().getName())
+                    && parent.permissions().containsAll(entry.permissions())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * {@code S-1-15-*}: app-container and capability SIDs (for example
+     * {@code ALL APPLICATION PACKAGES}), which Windows lists by raw SID. They
+     * are not accounts, so nothing can log on as them.
+     */
+    static boolean isCapabilitySid(UserPrincipal principal) {
+        return principal.getName().startsWith("S-1-15-");
     }
 
     /** {@code SYSTEM} / {@code Administrators} by (English) account name. */
@@ -801,6 +865,48 @@ final class VesperaNativeLoader {
             // Cleanup is purely opportunistic.
         }
         return deleted;
+    }
+
+    /**
+     * Best-effort removal of the fresh per-JVM directories a previous run left
+     * in {@code tmpDir} ({@link #FRESH_EXTRACTION_DIR}, older than
+     * {@link #LEGACY_MIN_AGE_MILLIS}). Each file is deleted on its own, then the
+     * directory if it is empty: on Windows the copy a live JVM has loaded is
+     * locked, so its delete fails and that directory stays until its JVM exits,
+     * which is the only time it can go. Returns the number of directories removed.
+     */
+    static int cleanupFreshExtractions(Path tmpDir, long nowMillis) {
+        if ("false".equalsIgnoreCase(System.getProperty("vespera.native.cleanupLegacy"))) {
+            return 0;
+        }
+        int removed = 0;
+        try (DirectoryStream<Path> dirs = Files.newDirectoryStream(tmpDir, "vespera-native-*")) {
+            for (Path dir : dirs) {
+                try {
+                    if (!FRESH_EXTRACTION_DIR.matcher(dir.getFileName().toString()).matches()
+                            || !Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)
+                            || nowMillis - Files.getLastModifiedTime(dir).toMillis() < LEGACY_MIN_AGE_MILLIS) {
+                        continue;
+                    }
+                    try (DirectoryStream<Path> files = Files.newDirectoryStream(dir)) {
+                        for (Path file : files) {
+                            try {
+                                Files.deleteIfExists(file);
+                            } catch (IOException | SecurityException loaded) {
+                                // Locked by a live JVM (Windows) or not ours: leave it.
+                            }
+                        }
+                    }
+                    Files.deleteIfExists(dir);
+                    removed++;
+                } catch (IOException | SecurityException inUseOrDenied) {
+                    // Not empty (a file is still loaded) or not ours: leave it.
+                }
+            }
+        } catch (IOException | SecurityException unreadableDir) {
+            // Cleanup is purely opportunistic.
+        }
+        return removed;
     }
 
     static MessageDigest messageDigest(String algorithm) {

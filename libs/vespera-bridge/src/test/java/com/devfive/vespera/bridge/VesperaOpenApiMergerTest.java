@@ -345,5 +345,53 @@ class VesperaOpenApiMergerTest {
                 List.of("_default")).customise(empty);
         assertNull(empty.getPaths());
         assertNull(empty.getComponents());
+        assertNull(empty.getWebhooks());
+    }
+
+    private static final String WEBHOOK_SPEC = """
+            {
+              "openapi": "3.1.0",
+              "info": {"title": "Rust", "version": "1.0.0"},
+              "security": [{"bearer": []}],
+              "webhooks": {
+                "userCreated": {"post": {"responses": {"200": {"description": "ok"}},
+                  "requestBody": {"content": {"application/json":
+                    {"schema": {"$ref": "#/components/schemas/User"}}}}}},
+                "petAdded": {"post": {"responses": {"200": {"description": "rust pet"}}}}
+              },
+              "components": {"schemas": {"User": {"type": "object"}}}
+            }
+            """;
+
+    @Test
+    void webhooksMergeByNameWithTheSameClashHandling() {
+        OpenAPI doc = springdocDocument();
+        // springdoc already documents `petAdded`; its definition is kept.
+        doc.setWebhooks(new java.util.LinkedHashMap<>(Map.of("petAdded",
+                new PathItem().post(new Operation().description("springdoc pet")))));
+
+        merger(app -> bytes(WEBHOOK_SPEC), List.of("_default")).customise(doc);
+
+        assertEquals("springdoc pet", doc.getWebhooks().get("petAdded").getPost().getDescription());
+        PathItem created = doc.getWebhooks().get("userCreated");
+        assertNotNull(created, "the Rust webhook is merged, not dropped with the patterns");
+        // The Rust component it references was renamed (the springdoc `User` clashes): refs rewritten.
+        assertEquals("#/components/schemas/vespera_User", ((Schema<?>) created.getPost().getRequestBody()
+                .getContent().get("application/json").getSchema()).get$ref());
+        assertNotNull(doc.getComponents().getSchemas().get("vespera_User"));
+        // The document-level security is copied onto the webhook operation, as onto a path operation.
+        assertEquals(List.of("bearer"), List.copyOf(created.getPost().getSecurity().get(0).keySet()));
+        assertNull(created.getPost().getParameters(), "no app-selection header on a webhook");
+    }
+
+    @Test
+    void aRustDocumentWithoutWebhooksLeavesTheHostsWebhooksAsTheyAre() {
+        OpenAPI doc = springdocDocument();
+        doc.setWebhooks(new java.util.LinkedHashMap<>(Map.of("petAdded",
+                new PathItem().post(new Operation().description("springdoc pet")))));
+
+        merger(app -> bytes(DEFAULT_SPEC), List.of("_default")).customise(doc);
+
+        assertEquals(List.of("petAdded"), List.copyOf(doc.getWebhooks().keySet()));
     }
 }
