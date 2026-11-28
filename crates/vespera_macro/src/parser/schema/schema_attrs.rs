@@ -211,6 +211,13 @@ impl SchemaConstraints {
 /// **recognized** key with a malformed value is an error: silently dropping
 /// known constraints makes both OpenAPI output and generated garde validators
 /// lie about user intent.
+///
+/// This infallible reader is only reached for attributes that
+/// [`try_extract_schema_constraints`] has already accepted: the derive entry
+/// points run that check first and emit `compile_error!` on a malformed key.
+/// For an attribute it rejects, this returns the default (no constraints at
+/// all, valid keys included), so it must not be the first reader of an
+/// attribute.
 #[must_use]
 pub fn extract_schema_constraints(attrs: &[Attribute]) -> SchemaConstraints {
     try_extract_schema_constraints(attrs).unwrap_or_default()
