@@ -81,25 +81,32 @@ class AsyncTimeoutHttpTest extends AbstractVesperaHttpIntegrationTest {
     }
 
     /**
+     * The body of a {@code 200} diagnostic probe. The probes are ASYNC too, so
+     * on a slow run one can outlive the request timeout and get the timeout's
+     * {@code 503} (not the value): retry until a 200 comes back, bounded.
+     */
+    private String probe(String path, String requestId) throws Exception {
+        long deadline = System.nanoTime() + 10_000_000_000L;
+        while (true) {
+            HttpResponse<String> response = get(path, requestId);
+            if (response.statusCode() == 200) {
+                return response.body();
+            }
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("the probe " + path + " kept failing: " + response.statusCode()
+                        + " " + response.body());
+            }
+            Thread.sleep(10);
+        }
+    }
+
+    /**
      * The process-wide count of ASYNC dispatches holding an in-flight slot.
      * The probe is itself an ASYNC dispatch in this context, so its own slot
      * is always counted while it reads the value.
      */
     private long asyncInFlight(String requestId) throws Exception {
-        // The probe is ASYNC too, so on a slow run it can outlive the request timeout and get
-        // the timeout's 503 (not a number): retry until a 200 with the count comes back.
-        long deadline = System.nanoTime() + 10_000_000_000L;
-        while (true) {
-            HttpResponse<String> response = get("/diag/async-in-flight", requestId);
-            if (response.statusCode() == 200) {
-                return Long.parseLong(response.body());
-            }
-            if (System.nanoTime() > deadline) {
-                throw new AssertionError("the in-flight probe kept failing: " + response.statusCode()
-                        + " " + response.body());
-            }
-            Thread.sleep(10);
-        }
+        return Long.parseLong(probe("/diag/async-in-flight", requestId));
     }
 
     /**
@@ -159,7 +166,7 @@ class AsyncTimeoutHttpTest extends AbstractVesperaHttpIntegrationTest {
         }
         // Outlive the original handler delay: it must never finish.
         Thread.sleep(HANDLER_MILLIS);
-        assertEquals("0", get("/diag/runs/" + key, key + "-poll2").body());
+        assertEquals("0", probe("/diag/runs/" + key, key + "-poll2"));
 
         List<DispatchEvent> events = eventsFor(requestId);
         assertEquals(1, events.size(), "reported exactly once: " + events);

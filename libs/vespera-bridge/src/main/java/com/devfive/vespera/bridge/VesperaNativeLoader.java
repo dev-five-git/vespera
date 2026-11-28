@@ -64,7 +64,7 @@ import java.util.regex.Pattern;
  * The extracted file is made owner read/execute only ({@code 0500}).  When
  * verification fails (a squatted, shared or symlinked directory) the
  * library is extracted into a fresh private
- * {@code Files.createTempDirectory("vespera-native-")} for this JVM only,
+ * {@code Files.createTempDirectory("vespera-native-fresh-")} for this JVM only,
  * with no reuse, and a warning is logged.  On file systems without POSIX
  * attributes (Windows) the base and the hash directory are checked for their
  * owner and ACL (see {@link #prepareAclDir}); a directory that fails it — or a
@@ -130,11 +130,9 @@ final class VesperaNativeLoader {
     private static final Pattern LEGACY_EXTRACTION =
             Pattern.compile("vespera-\\d+\\.(dll|so|dylib)");
     /**
-     * A per-JVM fresh directory ({@code Files.createTempDirectory("vespera-native-")}
-     * in {@code java.io.tmpdir}, used when the configured directory is not private).
+     * Legacy files, and fresh per-JVM directories ({@link NativeExtractionSweep}), younger than
+     * this may still be mid-load by an old JVM and are not swept.
      */
-    private static final Pattern FRESH_EXTRACTION_DIR = Pattern.compile("vespera-native-\\d+");
-    /** Legacy files younger than this may still be mid-load by an old JVM. */
     static final long LEGACY_MIN_AGE_MILLIS = 60L * 60L * 1000L;
 
     /**
@@ -209,7 +207,7 @@ final class VesperaNativeLoader {
             Path tmp = Paths.get(System.getProperty("java.io.tmpdir"));
             long now = System.currentTimeMillis();
             cleanupLegacyExtractions(tmp, now);
-            cleanupFreshExtractions(tmp, now);
+            NativeExtractionSweep.sweep(tmp, now);
         } catch (InvalidPathException ignored) {
             // Best-effort cleanup; the library is already loaded.
         }
@@ -716,7 +714,7 @@ final class VesperaNativeLoader {
     private static Path freshTempDir(Path rejected, Exception notPrivate,
             java.nio.file.attribute.FileAttribute<?>... attrs) throws IOException {
         try {
-            return Files.createTempDirectory("vespera-native-", attrs);
+            return Files.createTempDirectory(NativeExtractionSweep.FRESH_PREFIX, attrs);
         } catch (IOException tmpUnusable) {
             IOException failure = new IOException("native extraction directory " + rejected
                     + " is not usable (" + notPrivate.getMessage() + ") and no fallback directory could be"
@@ -865,48 +863,6 @@ final class VesperaNativeLoader {
             // Cleanup is purely opportunistic.
         }
         return deleted;
-    }
-
-    /**
-     * Best-effort removal of the fresh per-JVM directories a previous run left
-     * in {@code tmpDir} ({@link #FRESH_EXTRACTION_DIR}, older than
-     * {@link #LEGACY_MIN_AGE_MILLIS}). Each file is deleted on its own, then the
-     * directory if it is empty: on Windows the copy a live JVM has loaded is
-     * locked, so its delete fails and that directory stays until its JVM exits,
-     * which is the only time it can go. Returns the number of directories removed.
-     */
-    static int cleanupFreshExtractions(Path tmpDir, long nowMillis) {
-        if ("false".equalsIgnoreCase(System.getProperty("vespera.native.cleanupLegacy"))) {
-            return 0;
-        }
-        int removed = 0;
-        try (DirectoryStream<Path> dirs = Files.newDirectoryStream(tmpDir, "vespera-native-*")) {
-            for (Path dir : dirs) {
-                try {
-                    if (!FRESH_EXTRACTION_DIR.matcher(dir.getFileName().toString()).matches()
-                            || !Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)
-                            || nowMillis - Files.getLastModifiedTime(dir).toMillis() < LEGACY_MIN_AGE_MILLIS) {
-                        continue;
-                    }
-                    try (DirectoryStream<Path> files = Files.newDirectoryStream(dir)) {
-                        for (Path file : files) {
-                            try {
-                                Files.deleteIfExists(file);
-                            } catch (IOException | SecurityException loaded) {
-                                // Locked by a live JVM (Windows) or not ours: leave it.
-                            }
-                        }
-                    }
-                    Files.deleteIfExists(dir);
-                    removed++;
-                } catch (IOException | SecurityException inUseOrDenied) {
-                    // Not empty (a file is still loaded) or not ours: leave it.
-                }
-            }
-        } catch (IOException | SecurityException unreadableDir) {
-            // Cleanup is purely opportunistic.
-        }
-        return removed;
     }
 
     static MessageDigest messageDigest(String algorithm) {

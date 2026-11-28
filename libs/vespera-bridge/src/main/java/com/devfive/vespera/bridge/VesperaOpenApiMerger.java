@@ -11,6 +11,8 @@ import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.Paths;
 import io.swagger.v3.oas.models.tags.Tag;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -295,10 +297,85 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
         }
     }
 
-    /** The renamed pointer for a textual {@code $ref} value, or the value itself when it was not renamed. */
+    /**
+     * The renamed pointer for a textual {@code $ref} value, or the value itself when it was not
+     * renamed. The lookup uses the {@link #canonicalPointer canonical} form (Rust percent-encodes
+     * the component name, {@code My%20Dto}, while the renames are keyed by the plain name); the
+     * rewritten value is encoded the way Rust writes its own {@code $ref}s.
+     */
     private static JsonNode renamedPointer(JsonNode pointer, Map<String, String> renames) {
-        String target = renames.get(pointer.asText());
-        return target == null ? pointer : TextNode.valueOf(target);
+        String target = renames.get(canonicalPointer(pointer.asText()));
+        return target == null ? pointer : TextNode.valueOf(encodedPointer(target));
+    }
+
+    /**
+     * The canonical form of a {@code $ref}: its last segment (the component name) percent-decoded,
+     * JSON-pointer-unescaped and escaped again, which is the form {@link #ref} builds. Rust's
+     * {@code escape_schema_name} output ({@code My%20Dto}, {@code Pet~1Dog}) therefore maps to the
+     * same key as the plain name ({@code My Dto}, {@code Pet/Dog}).
+     */
+    static String canonicalPointer(String pointer) {
+        int slash = pointer.lastIndexOf('/');
+        if (slash < 0) {
+            return pointer;
+        }
+        String name = unescape(percentDecode(pointer.substring(slash + 1)));
+        return pointer.substring(0, slash + 1) + name.replace("~", "~0").replace("/", "~1");
+    }
+
+    /** The inverse of {@link #canonicalPointer} for a pointer built by {@link #ref}: the name segment percent-encoded as Rust does. */
+    static String encodedPointer(String pointer) {
+        int slash = pointer.lastIndexOf('/');
+        StringBuilder out = new StringBuilder(pointer.substring(0, slash + 1));
+        for (byte b : pointer.substring(slash + 1).getBytes(StandardCharsets.UTF_8)) {
+            int c = b & 0xFF;
+            if (isUnreserved(c) || c == '~') {
+                out.append((char) c);
+            } else {
+                out.append('%').append(HEX_DIGITS.charAt(c >> 4)).append(HEX_DIGITS.charAt(c & 0x0F));
+            }
+        }
+        return out.toString();
+    }
+
+    private static final String HEX_DIGITS = "0123456789ABCDEF";
+
+    /** {@code [A-Za-z0-9._-]}: the bytes {@code escape_schema_name} leaves as they are. */
+    private static boolean isUnreserved(int c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                || c == '-' || c == '.' || c == '_';
+    }
+
+    /** RFC 3986 percent-decoding; a {@code %} not followed by two hex digits is kept as written. */
+    static String percentDecode(String text) {
+        if (text.indexOf('%') < 0) {
+            return text;
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int i = 0;
+        while (i < text.length()) {
+            int high = text.charAt(i) == '%' && i + 2 < text.length() ? hexValue(text.charAt(i + 1)) : -1;
+            int low = high < 0 ? -1 : hexValue(text.charAt(i + 2));
+            if (low >= 0) {
+                out.write(high << 4 | low);
+                i += 3;
+            } else {
+                int codePoint = text.codePointAt(i);
+                out.writeBytes(new String(Character.toChars(codePoint)).getBytes(StandardCharsets.UTF_8));
+                i += Character.charCount(codePoint);
+            }
+        }
+        return out.toString(StandardCharsets.UTF_8);
+    }
+
+    private static int hexValue(char c) {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        return c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
     }
 
     /** The renamed security schemes ({@code old name → new name}) among {@code refRenames}. */
@@ -320,21 +397,34 @@ final class VesperaOpenApiMerger implements OpenApiCustomizer {
     /**
      * Security requirement objects reference schemes by <em>key</em>
      * ({@code [{"bearer": []}]}), not by {@code $ref}: rename those keys in
-     * the document-level {@code security} and in every operation's.
+     * the document-level {@code security} and in every operation's, including
+     * the operations of webhooks and of callbacks (a callback is an
+     * expression-to-path-item map, like {@code paths}).
      */
     private static void renameSecurityRequirements(ObjectNode spec, Map<String, String> renames) {
         if (renames.isEmpty()) {
             return;
         }
         renameRequirementKeys(spec.get("security"), renames);
-        if (!(spec.get("paths") instanceof ObjectNode paths)) {
+        renameInPathItems(spec.get("paths"), renames);
+        renameInPathItems(spec.get("webhooks"), renames);
+    }
+
+    /** {@link #renameSecurityRequirements} for the path items of a {@code paths} / {@code webhooks} / callback map. */
+    private static void renameInPathItems(JsonNode pathItems, Map<String, String> renames) {
+        if (!(pathItems instanceof ObjectNode items)) {
             return;
         }
-        for (JsonNode item : paths) {
+        for (JsonNode item : items) {
             if (item instanceof ObjectNode pathItem) {
                 for (String method : OPERATIONS) {
                     if (pathItem.get(method) instanceof ObjectNode operation) {
                         renameRequirementKeys(operation.get("security"), renames);
+                        if (operation.get("callbacks") instanceof ObjectNode callbacks) {
+                            for (JsonNode callback : callbacks) {
+                                renameInPathItems(callback, renames);
+                            }
+                        }
                     }
                 }
             }
