@@ -49,7 +49,7 @@ vespera/
 │   │   ├── src/ffi.rs        # stable C ABI (feature `ffi`) + ffi_app!/ffi_apps!
 │   │   └── include/vespera.h # hand-written C header for the ffi symbols
 │   └── vespera_jni/          # JNI bridge (depends on vespera_inprocess)
-│       ├── src/jni_impl.rs   # RUNTIME, jni_app! macro, JNI symbol export
+│       ├── src/jni_impl.rs   # re-exports the shared runtime (`vespera_inprocess::runtime`), jni_app! macro, JNI symbol export
 │       └── src/streaming_closures.rs  # Streaming closure factories + JMethodID cache
 ├── libs/
 │   └── vespera-bridge/       # Java library (com.devfive.vespera.bridge)
@@ -85,7 +85,7 @@ vespera/
 | App factory (FFI pattern) | `crates/vespera_inprocess/src/registry.rs` | register_app(), resolve_app_router() |
 | `crates/vespera_inprocess/src/bounded.rs` | ~514 | Resource bounds shared by every dispatch path: per-dispatch `Deadline`, the capped buffered-response sink (`max_buffered_response_bytes`), the bounded `422` body prefetch for `validation_errors` hoisting |
 | `crates/vespera_inprocess/src/cancel.rs` | ~272 | `cancellable` / `cancel`: sharded token registry for host-driven cancellation (registered before spawn, deregistered on drop) — backs JNI `AsyncDispatch.cancel0` |
-| JNI integration | `crates/vespera_jni/src/jni_impl.rs` | RUNTIME, jni_app! macro, JNI symbol export |
+| JNI integration | `crates/vespera_jni/src/jni_impl.rs` | re-exports the shared runtime (`vespera_inprocess::runtime`), jni_app! macro, JNI symbol export |
 | C ABI (non-JVM hosts) | `crates/vespera_inprocess/src/ffi.rs` + `include/vespera.h` | `extern "C"` symbols, `ffi_app!`/`ffi_apps!`; keep the header and `tests/ffi_header.rs` in sync |
 | Shared host runtime | `crates/vespera_inprocess/src/runtime.rs` | lazy build, leases, hooks, shutdown (JNI re-exports it) |
 | Java bridge library | `libs/vespera-bridge/` | com.devfive.vespera.bridge package |
@@ -119,12 +119,12 @@ vespera/
 | `crates/vespera_inprocess/src/registry.rs` | ~337 | App registration + lock-free default-app `OnceLock` + lock-free named-app `ArcSwap<HashMap<String, Router>>` (copy-on-write `rcu` on register) |
 | `crates/vespera_inprocess/benches/dispatch/serde_ab.rs` | ~294 | Criterion A/B helpers comparing serde_json vs hand-rolled wire-header paths |
 | `crates/vespera_jni/src/lib.rs` | ~211 | Crate root: module wiring, `jni` / `vespera_inprocess` re-exports, optional mimalloc `#[global_allocator]` |
-| `crates/vespera_jni/src/jni_impl.rs` | ~713 | JNI RUNTIME + `jni_app!` macro + the sync (`dispatchBytes`) and response / bidirectional streaming `Java_...` symbols; shared helpers the sibling `jni_impl_*` modules import |
+| `crates/vespera_jni/src/jni_impl.rs` | ~713 | JNI glue: re-exports the shared runtime from `vespera_inprocess::runtime` (the runtime itself is not built here) + `jni_app!` macro + the sync (`dispatchBytes`) and response / bidirectional streaming `Java_...` symbols; shared helpers the sibling `jni_impl_*` modules import |
 | `crates/vespera_jni/src/jni_impl_async.rs` | ~538 | `AsyncDispatch.{dispatch0,cancel0}` (behind `VesperaBridge.dispatchAsync`): in-flight permit, cancellable spawned dispatch, always-complete contract; `AsyncCompletion` (exactly-once completion, `503` on drop) shared with `jni_impl_park.rs` |
 | `crates/vespera_inprocess/src/direct.rs` | ~519 | DIRECT write: `finish_resumable` (never drains past `out`; `text/event-stream` handed over), `PendingDirectResponse` (`write_into` / `stream`, deadline-bounded), legacy exact-size `finish_direct_write`; every body DIRECT writes or counts (all statuses, exact-length or not, first write and `write_into`) is capped by `max_buffered_response_bytes` like the buffered path (`500`), only `stream` is uncapped |
 | `crates/vespera_jni/src/jni_impl_direct.rs` | ~380 | `dispatchDirect0` symbol + its `jint` overflow/unrepresentable sentinel protocol; `run_direct_symbol` shared buffer validation |
 | `crates/vespera_jni/src/jni_impl_park.rs` | ~159 | `AsyncDispatch.dispatchPollFirst0` (virtual-thread `ParkingDispatch`): poll the dispatch once on the caller under the runtime context (no-op waker); ready → inline wire, pending → spawn the half-polled future, a worker completes the `CompletableFuture`; holds the async in-flight permit + `RuntimeLease` throughout
-| `crates/vespera_jni/src/jni_impl_direct_stash.rs` | ~820 | DIRECT overflow stash (`BTreeMap`, at most 1024 entries, 30 s TTL) + `DirectStash.{dispatchResumable0,fetch0,stream0,discard0}`; handle = 8-byte BE token + flags byte (`FLAG_EXACT`, `FLAG_STREAM`) in `out[0..9]` |
+| `crates/vespera_jni/src/jni_impl_direct_stash.rs` | ~820 | DIRECT overflow stash (`BTreeMap`; hard ceilings 4096 entries / 1 GiB held, 30 s TTL, live entries never evicted early, a fresh overflow past a ceiling answers a retryable `503`) + `DirectStash.{dispatchResumable0,fetch0,stream0,discard0}`; handle = 8-byte BE token + flags byte (`FLAG_EXACT`, `FLAG_STREAM`) in `out[0..9]` |
 | `crates/vespera_inprocess/src/runtime.rs` | ~566 | Feature `runtime`: the shared host runtime for JNI + C ABI — worker / blocking-pool knobs, lazy build, `RuntimeLease` in-flight counting through `LeaseGate` (count + shut-down flag in one atomic word), graceful `shutdown_runtime` / `shutdown_runtime_then(timeout, cleanup)` (drain, then `shutdown_timeout`; background thread when called inside a runtime), `on_shared_runtime` hooks (cron), `mark_host_loaded` / `host_loaded`; `vespera_jni` re-exports it (its `shutdown_runtime` adds the DIRECT-stash cleanup) |
 | `crates/vespera_inprocess/src/runtime/gate.rs` | ~202 | Tokio-free `LeaseGate` (runtime lease count + shut-down bit, one `fetch_add` to enter, `fetch_or` to close); atomics swap to loom under `--cfg vespera_loom` (unit-test build only) and its `loom_*` models live here |
 | `crates/vespera_inprocess/src/runtime/in_flight.rs` | ~236 | Tokio-free `InFlightCap` admission protocol + the async in-flight cap (`async_max_in_flight` / `set_async_max_in_flight` / `try_acquire_async_permit` / `async_overloaded_wire`) shared by JNI `dispatchAsync` and C `vespera_dispatch_async` (ONE counter); atomics swap to loom under `--cfg vespera_loom` (unit-test build only) and its `loom_*` model lives here; `vespera_jni` re-exports the knobs |
@@ -188,7 +188,7 @@ vespera_inprocess (transport layer — no JNI deps)
 vespera_jni (JNI glue — thin layer)
   ├── vespera_inprocess (via workspace, features connect-info + runtime)
   ├── jni
-  └── tokio (rt-multi-thread — for LazyLock<Runtime>)
+  └── tokio (rt-multi-thread, sync, time — spawn / timeouts; the shared runtime is built in `vespera_inprocess::runtime`)
 
 rust-jni-demo (example — depends on vespera (features jni, ffi) plus serde, serde_json, futures-util, tokio; no axum / vespera_jni / vespera_inprocess)
   └── vespera = { features = ["jni", "ffi"] }
@@ -220,7 +220,7 @@ Feature flags:
 | Feature | Re-exports | Adds |
 |---------|-----------|------|
 | `inprocess` | `vespera::inprocess` (= `vespera_inprocess`) | dispatch, register_app, envelopes; enables `vespera_inprocess/connect-info` (`remote_addr` wire field → `ConnectInfo<SocketAddr>`, which needs `axum/tokio`) |
-| `jni` | `vespera::jni` (= `vespera_jni`) + implies `inprocess` | RUNTIME, jni_app!, JNI symbol |
+| `jni` | `vespera::jni` (= `vespera_jni`) + implies `inprocess` | jni_app!, JNI symbol (shares the `vespera_inprocess` runtime) |
 | `ffi` | `vespera::ffi_app!` / `ffi_apps!`, `vespera::inprocess::ffi` + implies `inprocess` (`vespera_inprocess/ffi` → `runtime`) | stable C ABI exported from the cdylib (`vespera_dispatch` & co.); shares the host runtime with `jni`, so one cdylib can serve both (`rust-jni-demo` does) |
 | `mimalloc` (default) | (with `jni`) mimalloc as the cdylib's `#[global_allocator]` | measured -15~19% on sync/direct dispatch vs Windows HeapAlloc (`libs/vespera-bridge/docs/jni-before-after-2026-06-11.md`); weak no-op without `jni` — an `ffi`-only cdylib keeps the system allocator |
 | `multipart` (default) | `vespera::multipart` (`TypedMultipart`, `FieldData`), `vespera::tempfile` | `#[derive(Multipart)]` / `schema_type!(..., multipart)` runtime + deps (tempfile, axum/axum-extra multer multipart, tokio fs/io-util); without it `vespera::Multipart` is a stand-in derive (`vespera_macro::MultipartFeatureDisabled`) whose `compile_error!` names the feature (trybuild `tests/ui/multipart_needs_feature.rs`, run under `--no-default-features`) |
@@ -596,7 +596,11 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 # The gates below that are not in that list are not release gates (see each
 # entry: semver is PR-only; minimal-versions, fuzz-build and native-image are
 # not gates; rust-branch-coverage is observational):
-#   lint     cargo fmt --all --check + both clippy feature sets (= `prelint`),
+#   lint     cargo fmt --all --check + both clippy feature sets (= `prelint`:
+#            `--all-targets --all-features`, then the no-default-features run
+#            per package, `-p vespera -p vespera_core -p vespera_macro
+#            -p vespera_inprocess -p vespera_jni`, never `--workspace`, whose
+#            feature unification hides defaults-off builds),
 #            bun install --frozen-lockfile, oxlint, bun test
 #   msrv     cargo check --all-features on Rust 1.88 (`rust-version` in the root
 #            Cargo.toml) for the 5 published crates — examples need newer Rust

@@ -87,7 +87,9 @@ GPG-signed (`.asc`), as Central requires.
 **Re-attested releases.** A release whose `attest` job did not complete (0.6.0:
 its SBOMs lacked a CycloneDX `serialNumber`) is attested afterwards by the
 manually dispatched [`.github/workflows/reattest.yml`](.github/workflows/reattest.yml)
-on `main`. It publishes nothing: it downloads the files the registries serve
+on `main`. It publishes no package to any registry; it attaches the SBOM files
+to the existing GitHub releases (`contents: write`, best effort, `gh release
+upload --clobber`) and attests them the same way. It downloads the files the registries serve
 (crates.io, checked against the crates.io SHA-256; Maven Central / Gradle Plugin
 Portal, checked against their `.sha1`), takes the released commit from the
 release tags (cross-checked with each crate's `.cargo_vcs_info.json`),

@@ -18,9 +18,13 @@ Different casing is a contract violation, not an equivalent spelling.
 
 ## Quick Start
 
+Dependencies: `vespera` (the only Vespera crate you depend on; axum is re-exported
+as `vespera::axum`), plus `garde` (for `Validate`), `serde` (derive) and `tokio`
+(`#[tokio::main]`).
+
 ```rust
 use vespera::{vespera, Serve, Schema, Validated, axum::Json};
-use axum::extract::Path;
+use vespera::axum::extract::Path;
 use serde::{Deserialize, Serialize};
 use garde::Validate;
 
