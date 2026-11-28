@@ -90,17 +90,25 @@ fn module_chain(file: &Path, line: usize) -> Vec<String> {
     crate::schema_macro::module_scope::inline_chain_at(file, line)
 }
 
+/// The items the inline module `chain` declares directly (child inline modules
+/// are other modules and are left out); empty when `chain` is not in `items`.
+fn module_own_items(items: &[syn::Item], chain: &[String]) -> Vec<syn::Item> {
+    super::default_fns::inline_module_items(items.to_vec(), chain).map_or_else(Vec::new, |module| {
+        module
+            .into_iter()
+            .filter(|item| !matches!(item, syn::Item::Mod(_)))
+            .collect()
+    })
+}
+
 /// How many `ident` items `items` declares directly in the inline module
 /// `chain`. Child inline modules are other modules and do not count, so a
 /// same-named item of a sibling module never keeps this one alive.
 fn declared_in_module(items: &[syn::Item], chain: &[String], ident: &str) -> usize {
-    super::default_fns::inline_module_items(items.to_vec(), chain).map_or(0, |module| {
-        module
-            .iter()
-            .filter(|item| !matches!(item, syn::Item::Mod(_)))
-            .map(|item| super::count_items_named(std::slice::from_ref(item), ident))
-            .sum()
-    })
+    module_own_items(items, chain)
+        .iter()
+        .map(|item| super::count_items_named(std::slice::from_ref(item), ident))
+        .sum()
 }
 
 /// The lines of `ident` tokens in a `schema_type!` invocation's tokens (groups
@@ -146,11 +154,23 @@ fn schema_type_lines(items: &[syn::Item], ident: &str) -> Vec<usize> {
     found.lines
 }
 
-/// [`schema_type_lines`] of the file at `path`; `None` when it is unreadable
-/// or does not parse (then nothing is pruned).
-fn schema_type_lines_of(path: &Path, ident: &str) -> Option<Vec<usize>> {
+/// The lines of the `schema_type!` invocations that name `ident` in the scope
+/// of `items`: the whole file, or only the inline module `chain` (R41-SM0-L1:
+/// a same-named invocation of a sibling module on the same line is not it).
+fn invoked_lines(items: &[syn::Item], chain: &[String], ident: &str, scope: Scope) -> Vec<usize> {
+    match scope {
+        Scope::File => schema_type_lines(items, ident),
+        Scope::Module => schema_type_lines(&module_own_items(items, chain), ident),
+    }
+}
+
+/// [`invoked_lines`] of the file at `path`; `None` when it is unreadable or
+/// does not parse (then nothing is pruned).
+fn schema_type_lines_of(path: &Path, ident: &str, chain: &[String]) -> Option<Vec<usize>> {
     let content = get_file_content(path)?;
-    with_fallback_parse(&content, |parsed| schema_type_lines(&parsed.items, ident))
+    with_fallback_parse(&content, |parsed| {
+        invoked_lines(&parsed.items, chain, ident, Scope::Module)
+    })
 }
 
 /// Whether `ident` is still declared in the given scope of `items`, or a
@@ -170,7 +190,7 @@ fn still_declared(
     // Only a generated DTO has no textual declaration to check: a derived item
     // that left its position is not kept by a `schema_type!` naming it there
     // (SM0-L1, round 40).
-    textual > 0 || (generated && schema_type_lines(items, ident).contains(&line))
+    textual > 0 || (generated && invoked_lines(items, chain, ident, scope).contains(&line))
 }
 
 /// Remember the current fingerprint of `identity`'s file and item module.
@@ -205,7 +225,7 @@ pub(super) fn record(identity: Option<&str>) {
                 || lines.contains(&line_of(old))
         }),
         None => {
-            if let Some(invoked) = schema_type_lines_of(path, ident) {
+            if let Some(invoked) = schema_type_lines_of(path, ident, &chain) {
                 records.retain(|old, recorded| {
                     file_and_ident(old) != Some((file, ident))
                         || !recorded.generated

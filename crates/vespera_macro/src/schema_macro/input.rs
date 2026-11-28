@@ -454,6 +454,12 @@ impl Parse for SchemaTypeInput {
                     // name = "CustomSchemaName" - custom OpenAPI schema name
                     input.parse::<Token![=]>()?;
                     let name_lit: LitStr = input.parse()?;
+                    if name_lit.value().is_empty() {
+                        return Err(syn::Error::new_spanned(
+                            &name_lit,
+                            "schema_type!: `name` is the OpenAPI component name: it must not be empty",
+                        ));
+                    }
                     schema_name = Some(name_lit.value());
                 }
                 "rename_all" => {

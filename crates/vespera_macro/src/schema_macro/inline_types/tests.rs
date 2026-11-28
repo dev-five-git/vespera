@@ -30,6 +30,7 @@ fn inline(name: &str, rename_all: &str, fields: Vec<InlineField>) -> InlineRelat
             serialize: Some(rename_all.to_string()),
             deserialize: Some(rename_all.to_string()),
         },
+        serde_path_error: None,
     }
 }
 

@@ -378,3 +378,41 @@ fn derive_replaced_by_schema_type_in_its_module_has_left_the_module() {
     bump_epoch();
     assert!(!super::stale::left_its_module(&stored));
 }
+
+/// R41-SM0-L1: a variant of `a` is not kept by a `schema_type!` naming the same
+/// item in a sibling module `b` on the line `a`'s invocation was recorded at.
+#[test]
+fn sibling_module_invocation_on_the_same_line_does_not_keep_a_variant() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("sibling_line.rs");
+    std::fs::write(
+        &file,
+        "mod a {\n    schema_type!(User from Model);\n}\nmod b {\n    schema_type!(User from Model);\n}\n",
+    )
+    .unwrap();
+    bump_epoch();
+    let identity = identity(&file, 2);
+    super::stale::record(Some(&identity));
+    let stored = StructMetadata {
+        source_identity: Some(identity),
+        ..StructMetadata::new("User".to_string(), String::new())
+    };
+
+    // `a`'s invocation is gone; `b`'s now sits on the line `a`'s was recorded at.
+    std::fs::write(
+        &file,
+        "mod a {}\nmod b { schema_type!(User from Model); }\n",
+    )
+    .unwrap();
+    bump_epoch();
+    assert!(super::stale::left_its_module(&stored));
+
+    // `a`'s own invocation back on that line: still a variant of `a`.
+    std::fs::write(
+        &file,
+        "mod a {\n    schema_type!(User from Model);\n}\nmod b {}\n",
+    )
+    .unwrap();
+    bump_epoch();
+    assert!(!super::stale::left_its_module(&stored));
+}

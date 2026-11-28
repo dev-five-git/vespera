@@ -163,7 +163,6 @@ pub fn layout_for(manifest_dir: &Path, call_site: Option<&Path>) -> CrateLayout 
         }
         _ => None,
     };
-    let custom_target = target.is_none();
     if let Some((dir, target_name, entry)) = target
         && let Some(root) = target_root(&dir, target_name.as_deref(), entry)
     {
@@ -176,9 +175,11 @@ pub fn layout_for(manifest_dir: &Path, call_site: Option<&Path>) -> CrateLayout 
     // A custom `[[test]]` / `[[bench]]` / `[[example]]` / `[[bin]]` `path` outside
     // the default directories (R28-SM1-L1) is rooted at the file rustc compiles.
     // Under `src/` (R32-SM1-L3) the same holds unless that file is the library
-    // or main root, which the library layout below already covers.
-    if custom_target
-        && let Some(call_site) = call_site
+    // or main root, which the library layout below already covers. A call site
+    // under a target directory with no named root (a helper of a custom
+    // `[[test]] name = "integration" path = "tests/main.rs"`, R41-SM1-1) is
+    // rooted at the compiler's root too, not at the library.
+    if let Some(call_site) = call_site
         && let Some(layout) = compiler_root_layout(call_site)
         && (relative_to(call_site, &src).is_none() || !is_default_src_root(&layout.roots, &src))
     {
@@ -562,6 +563,33 @@ mod tests {
             "{layout:?}"
         );
         assert_eq!(layout.module_path_of(&file).join("::"), module);
+    }
+
+    /// R41-SM1-1: a helper under a custom `[[test]] name = "integration"
+    /// path = "tests/main.rs"` has no `tests/integration.rs` / `tests/common.rs`
+    /// root in its target directory. It is rooted at the file rustc compiles
+    /// (`tests/main.rs`), so `crate::` resolves from `tests/`, not from `src/`,
+    /// and the helper's module path is `crate::common`.
+    #[test]
+    fn custom_test_root_helper_module() {
+        let dir = temp_crate();
+        std::fs::write(dir.path().join("tests/main.rs"), "").unwrap();
+        let _crate = crate::env_access::test_env::set_var("CARGO_CRATE_NAME", "integration");
+        let _args = crate::env_access::test_env::set_var(
+            crate::env_access::COMPILER_ARGS_KEY,
+            format!("rustc\n{}", dir.path().join("tests/main.rs").display()),
+        );
+        let file = dir.path().join("tests/common/mod.rs");
+        let layout = layout_for(dir.path(), Some(&file));
+        assert!(
+            same_path(&layout.module_dir, &dir.path().join("tests")),
+            "{layout:?}"
+        );
+        assert!(
+            same_path(&layout.roots[0], &dir.path().join("tests/main.rs")),
+            "{layout:?}"
+        );
+        assert_eq!(layout.module_path_of(&file).join("::"), "crate::common");
     }
 
     /// A cwd-relative call-site path (what rustc reports for workspace
