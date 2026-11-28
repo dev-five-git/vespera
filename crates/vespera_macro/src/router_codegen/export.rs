@@ -5,7 +5,7 @@ use syn::{
     parse::{Parse, ParseStream},
 };
 
-use vespera_core::schema::{escape_schema_name, unescape_schema_name};
+use vespera_core::schema::{escape_schema_name, split_schema_ref};
 
 use crate::metadata::CollectedMetadata;
 
@@ -318,23 +318,18 @@ fn rewrite_document_refs(document: &mut serde_json::Value, renames: &BTreeMap<St
 fn rewrite_refs(value: &mut serde_json::Value, renames: &BTreeMap<String, String>, names: bool) {
     match value {
         serde_json::Value::Object(object) => {
+            // RFC 6901: the fragment is percent-decoded before it is split into
+            // tokens, so `Pet%2Fx` names `Pet` with the suffix `%2Fx`; the
+            // suffix is kept as written.
             if !names
                 && let Some(serde_json::Value::String(reference)) = object.get_mut("$ref")
-                && let Some(target) = reference.strip_prefix("#/components/schemas/")
+                && let Some((name, suffix)) = split_schema_ref(reference)
+                && let Some(new_name) = renames.get(&name)
             {
-                // The name segment is escaped (`/` never appears raw in it), so
-                // the first `/` still starts the suffix (`/properties/...`).
-                let (segment, suffix) = target
-                    .split_once('/')
-                    .map_or((target, ""), |(name, suffix)| (name, suffix));
-                if let Some(new_name) = renames.get(&unescape_schema_name(segment)) {
-                    let escaped = escape_schema_name(new_name);
-                    *reference = if suffix.is_empty() {
-                        format!("#/components/schemas/{escaped}")
-                    } else {
-                        format!("#/components/schemas/{escaped}/{suffix}")
-                    };
-                }
+                *reference = format!(
+                    "#/components/schemas/{}{suffix}",
+                    escape_schema_name(new_name)
+                );
             }
             for (key, child) in object.iter_mut() {
                 if !names && DATA_KEYS.contains(&key.as_str()) {
@@ -840,6 +835,34 @@ mod tests {
             media,
             "{value:#}"
         );
+    }
+
+    /// RFC 6901 decodes the `$ref` fragment before it is split into tokens:
+    /// `Pet%2Fx` names the component `Pet` with the suffix `%2Fx`, so a renamed
+    /// `Pet` follows it, and the raw suffix is kept as written.
+    #[test]
+    fn encoded_slash_in_a_ref_names_the_component_before_it() {
+        let mut value = serde_json::json!({
+            "components": { "schemas": {
+                "Holder": { "properties": {
+                    "a": { "$ref": "#/components/schemas/Pet%2Fx" },
+                    "b": { "$ref": "#/components/schemas/Pet%2Fx/properties/id" },
+                    "c": { "$ref": "#/components/schemas/Pet" }
+                } },
+                "Pet": { "type": "object" }
+            } }
+        });
+        let renames = BTreeMap::from([("Pet".to_string(), "Animal".to_string())]);
+
+        rewrite_schema_refs(&mut value, &renames);
+
+        let props = &value["components"]["schemas"]["Holder"]["properties"];
+        assert_eq!(props["a"]["$ref"], "#/components/schemas/Animal%2Fx");
+        assert_eq!(
+            props["b"]["$ref"],
+            "#/components/schemas/Animal%2Fx/properties/id"
+        );
+        assert_eq!(props["c"]["$ref"], "#/components/schemas/Animal");
     }
 
     /// A root `webhooks` entry named like a data keyword (`default`) is a

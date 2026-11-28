@@ -335,6 +335,19 @@ fn namespace_and_serialize_export_openapi(
     Ok((spec, sidecar))
 }
 
+/// Whether the content-addressed include copy of an export is the spec its
+/// validated `sidecar` carries: the sidecar is the spec minus its closing `}`,
+/// then the catch-all key and its templates, so the copy must be that prefix
+/// closed again. A truncated or edited copy fails, and the export regenerates
+/// (round-41 R41-MR6-L1).
+fn export_include_matches(include: &Path, sidecar: &str) -> bool {
+    let key = format!(",\"{}\":", super::merge_lookup::CATCH_ALL_KEY);
+    let Some(at) = sidecar.rfind(&key) else {
+        return false;
+    };
+    std::fs::read_to_string(include).is_ok_and(|content| content == format!("{}}}", &sidecar[..at]))
+}
+
 fn finish_export_metadata(
     mut metadata: CollectedMetadata,
     schema_storage: &HashMap<String, StructMetadata>,
@@ -427,8 +440,11 @@ pub fn process_export_app(
     let cache_hit = cached.as_ref().is_some_and(|c| {
         c.is_fresh(&cache_key)
             && sidecar_matches(&spec_file, c.spec_json_hash, c.spec_json_fingerprint)
-            && c.spec_json_hash
-                .is_some_and(|hash| content_addressed(&export_dir, &include_stem, hash).is_file())
+            && c.spec_json_hash.is_some_and(|hash| {
+                let include = content_addressed(&export_dir, &include_stem, hash);
+                std::fs::read_to_string(&spec_file)
+                    .is_ok_and(|sidecar| export_include_matches(&include, &sidecar))
+            })
     });
 
     // Build a single fully-extended `metadata` per branch — previously the

@@ -17,7 +17,10 @@
 //!   relative to the module's directory (`<dir>/a/`).
 //! - An inline `#[path = "d"] mod h { .. }` names the directory its children
 //!   load from (`<dir>/d/`, not `<dir>/h/`): the `#[path]` value replaces the
-//!   module name as that block's directory segment.
+//!   module name as that block's directory segment. Outside any inline block
+//!   `<dir>` is the declaring file's directory, not the directory named after a
+//!   non-mod-rs file: `src/routes.rs` holding `#[path = "d"] mod h { mod x; }`
+//!   loads `src/d/x.rs` (checked against rustc, `cargo run` of a scratch crate).
 //!
 //! The tree is walked from the target, so it covers each child module of a
 //! path-loaded file, however deep. Ungated edges only, for the modules every
@@ -48,6 +51,10 @@ struct Block {
     /// The directory segment its children load from: its `#[path]` value, or
     /// its name.
     dir: String,
+    /// A top-level block (no enclosing inline module) with a `#[path]`: rustc
+    /// resolves that value against the declaring file's directory, not the
+    /// directory of its child modules.
+    file_relative: bool,
 }
 
 /// One `mod` declaration of a file.
@@ -125,6 +132,7 @@ impl Collector {
                     }
                     inline.push(Block {
                         id,
+                        file_relative: inline.is_empty() && path.is_some(),
                         dir: path.unwrap_or(name),
                     });
                     self.items(nested, inline, gated);
@@ -219,7 +227,7 @@ fn children(file: &Path, children_dir: &Path, reach: Reach, within: Option<usize
         } else {
             // A by-name child: `<dir>/<name>.rs` or `<dir>/<name>/mod.rs` (the
             // one that exists is the module; the other holds no declarations).
-            let child_dir = inline_dir(children_dir, decl).join(&decl.name);
+            let child_dir = inline_dir(file, children_dir, decl).join(&decl.name);
             nodes.push(Node {
                 file: child_dir.with_extension("rs"),
                 children_dir: child_dir.clone(),
@@ -236,12 +244,16 @@ fn children(file: &Path, children_dir: &Path, reach: Reach, within: Option<usize
 /// The directory a `mod` declaration of a file with child directory
 /// `children_dir` is resolved in: its inline blocks nest under it, each by
 /// its directory segment (`#[path]` value or name).
-fn inline_dir(children_dir: &Path, decl: &ModDecl) -> PathBuf {
+fn inline_dir(file: &Path, children_dir: &Path, decl: &ModDecl) -> PathBuf {
+    let start = match decl.inline.first() {
+        Some(block) if block.file_relative => {
+            file.parent().map(Path::to_path_buf).unwrap_or_default()
+        }
+        _ => children_dir.to_path_buf(),
+    };
     decl.inline
         .iter()
-        .fold(children_dir.to_path_buf(), |dir, block| {
-            dir.join(&block.dir)
-        })
+        .fold(start, |dir, block| dir.join(&block.dir))
 }
 
 /// The file a `#[path]` declaration names, the one rustc resolves: outside
@@ -252,7 +264,7 @@ fn path_target(file: &Path, children_dir: &Path, decl: &ModDecl) -> Option<PathB
     let base = if decl.inline.is_empty() {
         file.parent().map(Path::to_path_buf).unwrap_or_default()
     } else {
-        inline_dir(children_dir, decl)
+        inline_dir(file, children_dir, decl)
     };
     lexical(&base.join(path_value))
 }

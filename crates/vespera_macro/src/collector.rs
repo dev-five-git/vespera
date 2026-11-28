@@ -20,6 +20,20 @@ use crate::{
     route_impl::StoredRouteInfo,
 };
 
+/// The `#![cfg(..)]` predicates of a route file's own inner attributes: they
+/// gate every route in it, as its declaration's `#[cfg(..)]` does.
+fn inner_cfgs(file: &Path) -> Vec<String> {
+    crate::schema_macro::file_cache::get_parsed_file(file).map_or_else(Vec::new, |file_ast| {
+        module_scope::cfg_predicates(&file_ast.attrs)
+    })
+}
+
+/// Whether `file` is test-only through its own inner `#![cfg(test)]`.
+fn inner_test_only(file: &Path) -> bool {
+    crate::schema_macro::file_cache::get_parsed_file(file)
+        .is_some_and(|file_ast| test_scope::attrs_test_only(&file_ast.attrs))
+}
+
 /// Kebab-case a route path for the file-based routing convention
 /// (snake_case file / folder segments → kebab-case URL), but PRESERVE the
 /// contents of `{...}` path parameters verbatim.  Hyphenating a `{user_id}`
@@ -406,7 +420,7 @@ pub fn collect_metadata_from_files<'a>(
             }
             // Compiled routes behind a test-only `#[cfg(..)]` (a test build
             // registered them): mounted, but never documented.
-            let file_test_only = test_scope.file_test_only(file);
+            let file_test_only = test_scope.file_test_only(file) || inner_test_only(file);
             let defs = test_scope::fn_definitions(file);
             metadata.test_only_routes.extend(stored_test_only_routes(
                 &file_path,
@@ -427,7 +441,7 @@ pub fn collect_metadata_from_files<'a>(
             // into SCHEMA_STORAGE.field_defaults (Priority 0 in process_default_functions)
         } else {
             let parsed = crate::schema_macro::file_cache::get_parsed_file(file);
-            let module_cfg = modules.cfg_predicates(&segments);
+            let module_cfg = [modules.cfg_predicates(&segments), inner_cfgs(file)].concat();
             if !module_cfg.is_empty() {
                 // Never registered by `#[route]` and declared behind
                 // `#[cfg(..)]`: compiled out, or expanded after `vespera!`.
@@ -480,5 +494,7 @@ pub fn collect_metadata_from_files<'a>(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_inner_cfg;
 #[cfg(test)]
 mod tests_twins;

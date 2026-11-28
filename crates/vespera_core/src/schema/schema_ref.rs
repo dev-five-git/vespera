@@ -561,13 +561,33 @@ const fn hex_value(digit: u8) -> Option<u8> {
 /// [`escape_schema_name`] never hold a raw `/`, so they are unaffected.
 #[must_use]
 pub fn schema_name_of_ref(ref_path: &str) -> Option<String> {
+    split_schema_ref(ref_path).map(|(name, _)| name)
+}
+
+/// [`schema_name_of_ref`] plus the raw text after the name token, kept exactly
+/// as written: the JSON Pointer suffix (`/properties/b`), or an encoded `%2F`
+/// and what follows it. The name ends at the first raw `/` or `%2F`, so the
+/// suffix is empty or starts with one of them.
+#[must_use]
+pub fn split_schema_ref(ref_path: &str) -> Option<(String, &str)> {
     let segment = ref_path.strip_prefix(SCHEMA_REF_PREFIX)?;
-    let decoded = percent_decode(segment.as_bytes());
-    let end = decoded
-        .iter()
-        .position(|&byte| byte == b'/')
-        .unwrap_or(decoded.len());
-    Some(pointer_unescape(&decoded[..end]))
+    let bytes = segment.as_bytes();
+    let mut end = 0;
+    while let Some(&byte) = bytes.get(end) {
+        let escaped = if byte == b'%' {
+            hex_pair(&bytes[end + 1..])
+        } else {
+            None
+        };
+        if byte == b'/' || escaped == Some(b'/') {
+            break;
+        }
+        end += if escaped.is_some() { 3 } else { 1 };
+    }
+    Some((
+        pointer_unescape(&percent_decode(&bytes[..end])),
+        &segment[end..],
+    ))
 }
 
 impl Reference {
@@ -900,5 +920,25 @@ mod escape_tests {
         #[case] name: Option<&str>,
     ) {
         assert_eq!(schema_name_of_ref(ref_path).as_deref(), name);
+    }
+
+    #[rstest]
+    #[case::pointer_suffix("#/components/schemas/A/properties/b", Some(("A", "/properties/b")))]
+    #[case::encoded_slash_keeps_raw_suffix("#/components/schemas/Pet%2Fdog/items", Some(("Pet", "%2Fdog/items")))]
+    #[case::encoded_slash_is_the_only_suffix("#/components/schemas/Pet%2fdog", Some(("Pet", "%2fdog")))]
+    #[case::escaped_pointer_name_keeps_raw_suffix("#/components/schemas/a~1b%2Fc", Some(("a/b", "%2Fc")))]
+    #[case::bare_name("#/components/schemas/A", Some(("A", "")))]
+    #[case::not_a_schema("#/components/parameters/A/x", None)]
+    fn split_schema_ref_separates_the_name_from_the_raw_suffix(
+        #[case] ref_path: &str,
+        #[case] expected: Option<(&str, &str)>,
+    ) {
+        let actual = split_schema_ref(ref_path);
+        assert_eq!(
+            actual
+                .as_ref()
+                .map(|(name, suffix)| (name.as_str(), *suffix)),
+            expected
+        );
     }
 }
