@@ -67,6 +67,7 @@ fn parse_header(
     let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() else {
         return None;
     };
+    let inner_ty = strip_type_groups(inner_ty);
     if is_primitive_or_like(inner_ty) || is_reserved_header_name(param_name) {
         return None;
     }

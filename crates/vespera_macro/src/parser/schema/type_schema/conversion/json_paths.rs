@@ -5,9 +5,12 @@ use std::{borrow::Borrow, collections::HashSet, hash::Hash};
 
 /// `Map` through a `serde_json` segment anywhere before it (`serde_json::Map`,
 /// `vespera::serde_json::Map`, `::serde_json::Map`, and the `serde_json::map::Map`
-/// module path): the object type. A bare `Map` (the `use serde_json::Map;`
-/// spelling) is the same object type unless it names a known component schema,
-/// as the bare `Value` of [`is_json_value_path`] does.
+/// module path): the object type, whose members are the value type `V` of
+/// `Map<String, V>`. A bare `Map` (the `use serde_json::Map;` spelling) is the
+/// same object type unless it names a known component schema, as the bare
+/// `Value` of [`is_json_value_path`] does. Here a bare `Map` is not checked for
+/// its import: the derive's `Schema` assertion rejects an unimported `Map`
+/// before the conversion sees it (`schema_assertions/map_leaf.rs`).
 pub(super) fn is_serde_json_map_path(
     path: &syn::Path,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,

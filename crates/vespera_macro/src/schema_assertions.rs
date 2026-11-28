@@ -16,7 +16,8 @@
 //! 2. **Per-field leaf-type assertions** — for each field whose leaf
 //!    type is NOT a recognized OpenAPI builtin (per
 //!    [`is_builtin_openapi_type`]; a user module's `api::Header` is not one,
-//!    so it is asserted), NOT `serde_json::Value`, NOT a
+//!    so it is asserted), NOT `serde_json::Value`, NOT a `serde_json::Map`
+//!    (its value type is asserted instead), NOT a
 //!    generic type parameter of the current struct, NOT `PhantomData` (std's;
 //!    see the exemptions of `emit_field_assertions`), and NOT marked
 //!    with `#[schema(any)]` and no `value_type` (a `value_type` on an `any`
@@ -52,7 +53,7 @@ use crate::parser::schema::{
 use crate::schema_macro::is_extern_crate;
 
 mod map_leaf;
-use map_leaf::is_serde_json_map_leaf;
+use map_leaf::{BareMapImport, bare_map_import, is_serde_json_map_leaf};
 
 /// Emit BOTH the marker-trait impl AND the per-field leaf-type
 /// assertions for `input` — the single entry point called from
@@ -112,6 +113,10 @@ fn emit_marker_impl(input: &syn::DeriveInput) -> TokenStream {
 ///   unit.
 /// - Leaf is `serde_json::Value` (bare `Value`, SeaORM's `JsonValue`, OR
 ///   any path containing a `serde_json` segment ending in `Value`).
+/// - Leaf is `serde_json::Map<String, V>` (see [`is_serde_json_map_leaf`]:
+///   a bare `Map` only when the call-site file imports it from serde_json):
+///   the map itself is exempt, and its value type `V` is asserted like a
+///   field type of its own.
 /// - Leaf type's path references any generic parameter of the parent
 ///   struct — those can only be checked at the use site where the
 ///   generic is instantiated (the parent's marker impl is unconditional
@@ -148,10 +153,12 @@ fn emit_field_assertions(
         .collect();
 
     let mut blocks: Vec<TokenStream> = Vec::new();
+    // Read at most once, and only when a bare `Map` leaf needs it.
+    let bare_map = bare_map_import();
     let overrides = [SerdeSide::Serialize, SerdeSide::Deserialize]
         .map(|side| container_override_type(&input.attrs, side));
     for ty in overrides.iter().flatten() {
-        push_leaf_assertions(ty, ty.span(), &generic_idents, &mut blocks);
+        push_leaf_assertions(ty, ty.span(), &generic_idents, &bare_map, &mut blocks);
     }
     let fields_documented = overrides.iter().any(Option::is_none);
     if fields_documented
@@ -183,7 +190,13 @@ fn emit_field_assertions(
             // field's span (the design pins the diagnostic to the field,
             // not just its type, so `field.span()` covers the whole
             // `name: Type` declaration).
-            push_leaf_assertions(documented, field.span(), &generic_idents, &mut blocks);
+            push_leaf_assertions(
+                documented,
+                field.span(),
+                &generic_idents,
+                &bare_map,
+                &mut blocks,
+            );
         }
     }
 
@@ -195,9 +208,22 @@ fn push_leaf_assertions(
     ty: &Type,
     span: proc_macro2::Span,
     generic_idents: &HashSet<String>,
+    bare_map: &BareMapImport,
     blocks: &mut Vec<TokenStream>,
 ) {
     for (leaf, last_ident) in collect_leaf_custom_types(ty) {
+        // A `serde_json::Map<String, V>` is a JSON object whose members are
+        // `V` (the conversion documents that), so `V`'s leaves are asserted
+        // instead of the map itself.
+        if is_serde_json_map_leaf(&leaf, bare_map) {
+            if let Type::Path(type_path) = &leaf
+                && let Some(segment) = type_path.path.segments.last()
+                && let Some(value) = second_generic_type_arg(segment)
+            {
+                push_leaf_assertions(value, span, generic_idents, bare_map, blocks);
+            }
+            continue;
+        }
         // A builtin-named leaf is the builtin only when it is bare or an
         // external crate's path; a user module's `api::Header` is a type of
         // its own, so it is checked like any other custom leaf.
@@ -210,7 +236,6 @@ fn push_leaf_assertions(
             || builtin
             || phantom
             || is_serde_json_value_leaf(&leaf)
-            || is_serde_json_map_leaf(&leaf)
         {
             continue;
         }

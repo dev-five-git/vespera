@@ -82,7 +82,7 @@ fn query_inner(ty: &Type) -> Option<(&Type, bool)> {
         return None;
     };
     match args.args.first() {
-        Some(syn::GenericArgument::Type(inner_ty)) => Some((inner_ty, optional)),
+        Some(syn::GenericArgument::Type(inner_ty)) => Some((strip_type_groups(inner_ty), optional)),
         _ => None,
     }
 }
