@@ -155,11 +155,6 @@ const NOTIFICATION_BAD_FROM: &str = "pub struct Model {\n    pub id: i32,\n    #
 // A malformed `#[sea_orm(...)]` identifier value is a spanned error, not a
 // `syn::Ident::new` panic.
 #[rstest]
-#[case::relation_enum_with_space(
-    "author", &[],
-    with_enum(rel("author", "BelongsTo", quote! { crate::models::user::Schema }, false), Some("Author Comments"), None, None),
-    "schema_type!: cannot load relation field `author`: no field of the `Model` behind `crate::models::user::Schema` has `#[sea_orm(relation_enum = \"Author Comments\", from = \"..\")]`; add it there, or `omit` the field"
-)]
 #[case::required_from_with_space(
     "author", &[],
     with_enum(rel("author", "BelongsTo", quote! { crate::models::user::Schema }, false), Some("Author"), Some("author id"), None),
@@ -241,6 +236,40 @@ fn malformed_sea_orm_ident_is_an_error(
     )
     .expect_err("malformed identifier must be a syn::Error");
     assert_eq!(err.to_string(), expected);
+}
+
+/// R44-SM2-L2: `relation_enum` is only a lookup key, never an identifier, so a
+/// value with a space is searched for like any other and the not-found
+/// diagnostic names it (it is not an "is not a valid Rust identifier" error).
+#[test]
+fn relation_enum_with_space_is_a_lookup_key() {
+    let relation = with_enum(
+        rel(
+            "author",
+            "BelongsTo",
+            quote! { crate::models::user::Schema },
+            false,
+        ),
+        Some("Author Comments"),
+        None,
+        None,
+    );
+    let err = try_scenario(
+        &[],
+        "UserSchema",
+        "crate::models::user::Model",
+        &[
+            ("id", "id", false, false),
+            ("author", "author", false, true),
+        ],
+        &[relation],
+        &["crate", "models", "user"],
+    )
+    .expect_err("no model holds the relation");
+    assert_eq!(
+        err.to_string(),
+        "schema_type!: cannot load relation field `author`: no field of the `Model` behind `crate::models::user::Schema` has `#[sea_orm(relation_enum = \"Author Comments\", from = \"..\")]`; add it there, or `omit` the field"
+    );
 }
 
 // ── Scenario table ───────────────────────────────────────────────

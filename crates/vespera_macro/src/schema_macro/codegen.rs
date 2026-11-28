@@ -695,6 +695,28 @@ mod tests {
         assert!(validate_filter_names(&item, &pick_input(input), "S").is_ok());
     }
 
+    /// R44-SM1-L2: a `serde(skip)` / `skip_serializing` a statically active
+    /// `cfg_attr` adds leaves the field out of the serialize side, so a `pick`
+    /// of it is refused like a plain skip. An inactive or undecided predicate
+    /// (and a non-serde item) keeps the field a candidate.
+    #[rstest::rstest]
+    #[case::active_skip("#[cfg_attr(all(), serde(skip))]", true)]
+    #[case::active_skip_serializing("#[cfg_attr(all(), serde(skip_serializing))]", true)]
+    #[case::inactive_skip("#[cfg_attr(any(), serde(skip))]", false)]
+    #[case::undecided_skip("#[cfg_attr(some_unknown_flag, serde(skip))]", false)]
+    #[case::other_serde_item("#[cfg_attr(all(), serde(rename = \"y\"))]", false)]
+    #[case::non_serde_item("#[cfg_attr(all(), derive(Debug))]", false)]
+    #[case::malformed_cfg_attr("#[cfg_attr(all())]", false)]
+    #[case::bare_serde_path("#[cfg_attr(all(), serde)]", false)]
+    #[case::non_cfg_attr("#[doc = \"x\"]", false)]
+    fn cfg_attr_serde_skip_refuses_a_pick(#[case] attr: &str, #[case] refused: bool) {
+        let item = parse(&format!(
+            "pub struct S {{ pub user_name: String, {attr} pub gated: i32 }}"
+        ));
+        let result = validate_filter_names(&item, &pick_input(r#"S, pick = ["gated"]"#), "S");
+        assert_eq!(result.is_err(), refused, "{result:?}");
+    }
+
     fn pick_input(input: &str) -> SchemaInput {
         syn::parse_str(input).unwrap()
     }

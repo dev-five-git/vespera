@@ -82,6 +82,17 @@ fn same_named_structs_in_inline_mods_of_one_file_conflict() {
     "macro_rules! gen { () => { struct User; } }\nstruct User { id: i64 }\n",
     false
 )]
+// R44-SM0-L1: an invocation that only names the type declares nothing, so the
+// edited item is still the one moved item; a statement-position invocation that
+// declares a `User` is counted like an item-position one.
+#[case::schema_type_only_names_it(
+    "schema_type!(UserDto from User, omit = [\"id\"]);\n\nstruct User { id: i64 }\n",
+    true
+)]
+#[case::statement_macro_declares_it(
+    "fn f() { gen!(struct User); }\n\nstruct User { id: i64 }\n",
+    false
+)]
 fn moved_item_replacement(#[case] source: &str, #[case] replaced: bool) {
     let dir = tempfile::TempDir::new().unwrap();
     let file = dir.path().join("models.rs");
@@ -162,13 +173,22 @@ fn count_items_named_descends_into_nested_items(#[case] source: &str, #[case] ex
 }
 
 /// R43-SM-L1: a macro item counts (apart from the literal declarations) when
-/// its tokens name the item at any group depth, unless a `#[cfg]` rules it
+/// its tokens declare the item at any group depth, unless a `#[cfg]` rules it
 /// out; a macro naming another item does not count.
+/// R44-SM0-L1: a macro that only NAMES the item (`schema_type!(Dto from X)`)
+/// declares nothing and does not count, in item or statement position alike.
 #[rstest::rstest]
 #[case::macro_rules_mentions_name("macro_rules! gen { () => { struct X; } } struct X;", 1)]
 #[case::macro_rules_other_name("macro_rules! gen { () => { struct Y; } } struct X;", 0)]
 #[case::inactive_macro_item("#[cfg(any())] macro_rules! gen { () => { struct X; } } struct X;", 0)]
-#[case::invocation_naming_it("gen!(X);", 1)]
+#[case::invocation_declaring_struct("gen!(struct X);", 1)]
+#[case::invocation_declaring_enum("gen!(enum X {});", 1)]
+#[case::invocation_declaring_type("gen!(type X = u8;);", 1)]
+#[case::invocation_naming_it("gen!(X);", 0)]
+#[case::schema_type_naming_source("schema_type!(UserDto from X, omit = [\"id\"]);", 0)]
+#[case::statement_declaring_it("fn f() { gen!(struct X); } struct X;", 1)]
+#[case::statement_naming_it("fn f() { gen!(X); } struct X;", 0)]
+#[case::inactive_statement_macro("fn f() { #[cfg(any())] gen!(struct X); } struct X;", 0)]
 fn macro_items_naming_the_item(#[case] source: &str, #[case] expected: usize) {
     let parsed: syn::File = syn::parse_str(source).unwrap();
     assert_eq!(count_named(&parsed.items, "X").1, expected);

@@ -391,11 +391,16 @@ pub fn get_module_path_from_schema_path(schema_path: &proc_macro2::TokenStream) 
     }
 
     // Raw identifiers (`r#type`) are un-raw'd like every other module path.
+    // A leading `::` keeps its empty first segment (the extern-crate root, as
+    // `path_tokens` reads it), so `::shared_api::user` never reads as the local
+    // `crate::shared_api::user` (R44-SM1-L1).
+    let leading_colons = path_str.trim_start().starts_with("::");
     let mut result: Vec<String> = path_str
         .split("::")
         .map(|s| s.trim().trim_start_matches("r#"))
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
+        .enumerate()
+        .filter(|(index, s)| !s.is_empty() || (*index == 0 && leading_colons))
+        .map(|(_, s)| s.to_string())
         .collect();
     result.pop();
 
@@ -572,6 +577,17 @@ mod tests {
             second.definition.contains("renamed_field"),
             "{}",
             second.definition
+        );
+    }
+
+    /// R44-SM1-L1: a leading `::` keeps its empty root segment, so the module
+    /// path of an extern-crate relation never reads as `crate::shared_api::user`.
+    #[test]
+    fn leading_colons_module_path_keeps_the_extern_root() {
+        let schema_path = quote::quote!(::shared_api::user::Schema);
+        assert_eq!(
+            get_module_path_from_schema_path(&schema_path),
+            ["", "shared_api", "user"]
         );
     }
 

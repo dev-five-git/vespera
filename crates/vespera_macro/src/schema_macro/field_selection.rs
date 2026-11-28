@@ -17,13 +17,15 @@
 use std::collections::BTreeSet;
 use std::collections::HashSet;
 
+use syn::punctuated::Punctuated;
+
 use crate::parser::schema::{
     SerdeSide, derives_serialize, extract_field_rename_owned, extract_serde_rename_all,
     extract_serde_skip_flags,
 };
 use crate::parser::{extract_rename_all, rename_field, strip_raw_prefix_owned};
 
-use super::cfg_eval::compiled_out;
+use super::cfg_eval::{Predicate, compiled_out, statically_active};
 
 /// One named field of a source struct a `pick` / `omit` name can select.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,15 +66,59 @@ pub fn source_fields(struct_item: &syn::ItemStruct) -> Vec<SourceField> {
             );
             let json = extract_field_rename_owned(&field.attrs, SerdeSide::Serialize, serializes)
                 .unwrap_or_else(|| rename_field(&rust, rename_all.as_deref()));
-            let flags = extract_serde_skip_flags(&field.attrs);
             SourceField {
                 index,
                 rust,
                 json,
-                serialized: !(flags.skip || flags.skip_serializing),
+                serialized: serialized_field(&field.attrs),
             }
         })
         .collect()
+}
+
+/// Whether serde writes a field with `attrs`: neither `skip` nor
+/// `skip_serializing` in its own `serde(..)` items or in a `cfg_attr(p, ..)`
+/// whose predicate is statically active. An undecided predicate keeps the
+/// field, as a plain `#[cfg]` one does (R44-SM1-L2).
+fn serialized_field(attrs: &[syn::Attribute]) -> bool {
+    let active: Vec<syn::Attribute> = attrs.iter().flat_map(active_serde_attrs).collect();
+    let flags = extract_serde_skip_flags(&active);
+    !(flags.skip || flags.skip_serializing)
+}
+
+/// The `serde(..)` attribute `attr` is, or the ones a statically active
+/// `cfg_attr` adds (`cfg_attr(p, serde(..))`); nothing for any other attribute.
+fn active_serde_attrs(attr: &syn::Attribute) -> Vec<syn::Attribute> {
+    if attr.path().is_ident("serde") {
+        return vec![attr.clone()];
+    }
+    if !attr.path().is_ident("cfg_attr") {
+        return Vec::new();
+    }
+    let Ok((predicate, items)) = attr.parse_args_with(cfg_attr_parts) else {
+        return Vec::new();
+    };
+    if !statically_active(&predicate) {
+        return Vec::new();
+    }
+    items.iter().filter_map(serde_item_attr).collect()
+}
+
+/// `cfg_attr(predicate, items..)` split into the predicate and its items.
+fn cfg_attr_parts(input: syn::parse::ParseStream) -> syn::Result<(Predicate, Vec<syn::Meta>)> {
+    let predicate: Predicate = input.parse()?;
+    input.parse::<syn::Token![,]>()?;
+    let items = Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated(input)?;
+    Ok((predicate, items.into_iter().collect()))
+}
+
+/// The `#[serde(..)]` attribute equal to a `serde(..)` item, if it is one.
+fn serde_item_attr(item: &syn::Meta) -> Option<syn::Attribute> {
+    if !item.path().is_ident("serde") {
+        return None;
+    }
+    let tokens = &item.require_list().ok()?.tokens;
+    Some(syn::parse_quote!(#[serde(#tokens)]))
 }
 
 /// The fields of `fields` that `name` selects: every field whose Rust

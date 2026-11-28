@@ -304,6 +304,24 @@ fn qualified_schema_path_ignores_empty_namespace_segments() {
     assert!(metadata.definition.contains("pub struct Model"));
 }
 
+/// R44-SM1-L1: a leading `::` names a crate the compiler links, so a same-named
+/// local module (`src/shared_api/user.rs`) is never read for it; the `crate::`
+/// spelling of the same module still resolves.
+#[test]
+fn leading_colons_path_never_reads_a_same_named_local_module() {
+    let temp = TempDir::new().unwrap();
+    let shared = temp.path().join("src").join("shared_api");
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(shared.join("user.rs"), "pub struct Model { pub id: i32 }").unwrap();
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
+    bump_epoch();
+
+    assert!(find_struct_from_schema_path("::shared_api::user::Model").is_none());
+    assert!(find_model_from_schema_path("::shared_api::user::Schema").is_none());
+    assert!(find_struct_from_schema_path("crate::shared_api::user::Model").is_some());
+    assert!(find_model_from_schema_path("crate::shared_api::user::Schema").is_some());
+}
+
 /// `..` folds: `src/../models/user.rs` is outside `src`.
 #[test]
 fn test_file_path_to_module_path_folds_parent_components() {
