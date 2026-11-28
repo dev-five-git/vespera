@@ -223,7 +223,7 @@ class ReactiveStreamAbortTest {
         limited.write(new byte[chunk], 0, chunk);
         assertEquals(0, big.size());
         limited.write('x');
-        assertEquals(chunk + 1, big.size(), "released past the explicit chunk limit");
+        assertEquals(chunk + 1, big.size(), "released past the STREAM_CHUNK_BYTES threshold");
 
         MockServerHttpResponse endedResponse = new MockServerHttpResponse();
         ReactiveProxyResponse endedOut = new ReactiveProxyResponse(endedResponse, null, null, null);

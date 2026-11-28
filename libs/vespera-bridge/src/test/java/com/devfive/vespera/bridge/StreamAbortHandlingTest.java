@@ -7,9 +7,14 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import jakarta.servlet.ServletOutputStream;
+import jakarta.servlet.WriteListener;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 /**
@@ -130,5 +135,77 @@ class StreamAbortHandlingTest {
 
         assertTrue(ran[0]);
         assertTrue(servlet.isCommitted());
+    }
+
+    /** A servlet response whose client went away: every write after {@link #disconnect()} fails. */
+    private static final class DisconnectedResponse extends MockHttpServletResponse {
+        private boolean gone;
+
+        void disconnect() {
+            gone = true;
+        }
+
+        @Override
+        public ServletOutputStream getOutputStream() {
+            ServletOutputStream real = super.getOutputStream();
+            if (!gone) {
+                return real;
+            }
+            return new ServletOutputStream() {
+                @Override
+                public boolean isReady() {
+                    return true;
+                }
+
+                @Override
+                public void setWriteListener(WriteListener listener) {
+                    // not used by the proxy
+                }
+
+                @Override
+                public void write(int b) throws IOException {
+                    throw new IOException("broken pipe");
+                }
+            };
+        }
+    }
+
+    @Test
+    void aClientGoneWhileTheAbortIsAnsweredKeepsTheStreamFailureAsTheCause() throws IOException {
+        DisconnectedResponse servlet = new DisconnectedResponse();
+        ProxyServletResponse response = appliedRustHeader(servlet);
+        servlet.disconnect();
+        VesperaStreamAbortedException panic =
+                new VesperaStreamAbortedException(VesperaStreamAbortedException.PANIC_MESSAGE);
+
+        IOException thrown = assertThrows(IOException.class,
+                () -> DirectModeDispatcher.streamHeaderFirst(response, () -> {
+                    throw panic;
+                }));
+
+        assertSame(panic, thrown, "the stream failure is rethrown, not the broken pipe");
+        assertEquals(1, thrown.getSuppressed().length);
+        assertEquals("broken pipe", thrown.getSuppressed()[0].getMessage());
+        assertTrue(response.panicked());
+    }
+
+    @Test
+    void aClientGoneWhileTheBidirectionalAbortIsAnsweredKeepsTheStreamFailureAsTheCause()
+            throws IOException {
+        DisconnectedResponse servlet = new DisconnectedResponse();
+        ProxyServletResponse response = appliedRustHeader(servlet);
+        servlet.disconnect();
+        ProxyExchange exchange = new ProxyExchange(
+                LoggerFactory.getLogger(VesperaProxyController.class), List.of(), "POST", "rid-1");
+        IOException failure = new IOException("body broke");
+
+        IOException thrown = assertThrows(IOException.class,
+                () -> VesperaProxyController.streamBidirectional(() -> {
+                    throw failure;
+                }, response, new GatedRequestInputStream(new ByteArrayInputStream(new byte[0])),
+                        exchange));
+
+        assertSame(failure, thrown, "the stream failure is rethrown, not the broken pipe");
+        assertEquals("broken pipe", thrown.getSuppressed()[0].getMessage());
     }
 }
