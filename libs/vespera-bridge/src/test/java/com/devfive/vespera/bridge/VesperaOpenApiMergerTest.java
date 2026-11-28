@@ -394,4 +394,90 @@ class VesperaOpenApiMergerTest {
 
         assertEquals(List.of("petAdded"), List.copyOf(doc.getWebhooks().keySet()));
     }
+
+    /** Operation-level security of a webhook and of its callback: the scheme key is renamed too. */
+    private static final String WEBHOOK_SECURITY_SPEC = """
+            {
+              "openapi": "3.1.0",
+              "info": {"title": "Rust", "version": "1.0.0"},
+              "webhooks": {
+                "userCreated": {"post": {"security": [{"bearer": ["hook"]}],
+                  "responses": {"200": {"description": "ok"}},
+                  "callbacks": {"onDone": {"{$request.body#/url}": {"post": {
+                    "security": [{"bearer": []}], "responses": {"200": {"description": "cb"}}}}}}}}
+              },
+              "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}}}
+            }
+            """;
+
+    @Test
+    void webhookAndCallbackOperationSecurityFollowASchemeRename() {
+        OpenAPI doc = springdocDocument();
+        // springdoc already has a different `bearer`, so the Rust one is renamed.
+        doc.getComponents().addSecuritySchemes("bearer", new io.swagger.v3.oas.models.security.SecurityScheme()
+                .type(io.swagger.v3.oas.models.security.SecurityScheme.Type.HTTP)
+                .scheme("bearer").bearerFormat("JWT"));
+
+        merger(app -> bytes(WEBHOOK_SECURITY_SPEC), List.of("_default")).customise(doc);
+
+        assertNotNull(doc.getComponents().getSecuritySchemes().get("vespera_bearer"));
+        PathItem created = doc.getWebhooks().get("userCreated");
+        assertEquals(List.of("vespera_bearer"), List.copyOf(created.getPost().getSecurity().get(0).keySet()));
+        assertEquals(List.of("hook"), created.getPost().getSecurity().get(0).get("vespera_bearer"));
+        Operation callback = created.getPost().getCallbacks().get("onDone").get("{$request.body#/url}").getPost();
+        assertEquals(List.of("vespera_bearer"), List.copyOf(callback.getSecurity().get(0).keySet()));
+    }
+
+    /** A component whose name needs percent-encoding in a {@code $ref}, as Rust writes it. */
+    private static final String ENCODED_NAME_SPEC = """
+            {
+              "openapi": "3.1.0",
+              "info": {"title": "Rust", "version": "1.0.0"},
+              "paths": {"/dto": {"get": {"responses": {"200": {"description": "ok", "content": {"application/json":
+                {"schema": {"$ref": "#/components/schemas/My%20Dto"}}}}}}}},
+              "components": {"schemas": {"My Dto": {"type": "object", "properties": {"self":
+                {"$ref": "#/components/schemas/My%20Dto"}}}}}
+            }
+            """;
+
+    @Test
+    void percentEncodedRustRefsAreRenamedLikePlainOnes() {
+        OpenAPI doc = springdocDocument();
+        // springdoc's own `My Dto` is a different component: the Rust one is renamed.
+        Schema<Object> javaDto = new Schema<>();
+        javaDto.setDescription("the Java dto");
+        doc.getComponents().addSchemas("My Dto", javaDto);
+
+        merger(app -> bytes(ENCODED_NAME_SPEC), List.of("_default")).customise(doc);
+
+        Map<String, Schema> schemas = doc.getComponents().getSchemas();
+        assertEquals("the Java dto", schemas.get("My Dto").getDescription());
+        assertNotNull(schemas.get("vespera_My Dto"));
+        // Rewritten to the form Rust uses (escape_schema_name), so it resolves to the renamed component.
+        assertEquals("#/components/schemas/vespera_My%20Dto", ((Schema<?>) schemas.get("vespera_My Dto")
+                .getProperties().get("self")).get$ref());
+        assertEquals("#/components/schemas/vespera_My%20Dto", doc.getPaths().get("/dto").getGet().getResponses()
+                .get("200").getContent().get("application/json").getSchema().get$ref());
+    }
+
+    @Test
+    void pointerCanonicalFormMatchesRustEncodingAndPlainNames() {
+        String base = "#/components/schemas/";
+        assertEquals(base + "My Dto", VesperaOpenApiMerger.canonicalPointer(base + "My%20Dto"));
+        assertEquals(base + "My Dto", VesperaOpenApiMerger.canonicalPointer(base + "My Dto"));
+        // A literal slash is "~1" in the pointer; an encoded "/" decodes to the same name.
+        assertEquals(base + "Pet~1Dog", VesperaOpenApiMerger.canonicalPointer(base + "Pet~1Dog"));
+        assertEquals(base + "Pet~1Dog", VesperaOpenApiMerger.canonicalPointer(base + "Pet%2FDog"));
+        // A literal tilde and percent sign: escaped in the pointer, percent-encoded by Rust.
+        assertEquals(base + "a~0b%25", VesperaOpenApiMerger.canonicalPointer(base + "a~0b%2525"));
+        assertEquals(base + "~01", VesperaOpenApiMerger.canonicalPointer(base + "~01"));
+        // Not a pointer with a name segment: unchanged.
+        assertEquals("no-slash", VesperaOpenApiMerger.canonicalPointer("no-slash"));
+        assertEquals(base + "%G1", VesperaOpenApiMerger.canonicalPointer(base + "%G1"));
+        assertEquals(base + "My%20Dto", VesperaOpenApiMerger.encodedPointer(base + "My Dto"));
+        assertEquals(base + "Pet~1Dog%C3%A9~0", VesperaOpenApiMerger.encodedPointer(base + "Pet~1Dogé~0"));
+        assertEquals("aé%", VesperaOpenApiMerger.percentDecode("a%C3%A9%"));
+        assertEquals("%zz", VesperaOpenApiMerger.percentDecode("%zz"));
+        assertEquals("😀", VesperaOpenApiMerger.percentDecode("😀"));
+    }
 }

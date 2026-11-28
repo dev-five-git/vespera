@@ -710,12 +710,12 @@ class VesperaNativeLoaderTest {
                 Files.setLastModifiedTime(p, old);
             }
 
-            assertEquals(1, VesperaNativeLoader.cleanupFreshExtractions(tmp, now));
+            assertEquals(1, NativeExtractionSweep.sweep(tmp, now));
             assertTrue(Files.notExists(stale), "the old fresh directory and its copy are removed");
             assertTrue(Files.isDirectory(locked), "a directory that still holds something stays");
             assertTrue(Files.isDirectory(young), "a young directory is left to its JVM");
             assertTrue(Files.isDirectory(foreign), "a name that is not a fresh extraction is left");
-            assertEquals(0, VesperaNativeLoader.cleanupFreshExtractions(tmp.resolve("missing"), now));
+            assertEquals(0, NativeExtractionSweep.sweep(tmp.resolve("missing"), now));
         } finally {
             deleteTree(tmp);
         }
