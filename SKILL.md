@@ -117,11 +117,13 @@ pub async fn create(
   (`length`, `email`, `range`, `pattern`, custom, …).
 - Vespera's `#[derive(Schema)]` continues to drive the OpenAPI spec — the two
   derives compose cleanly on the same struct, and `#[derive(Schema)]`
-  documents every `#[garde(...)]` rule with an exact JSON Schema equivalent:
+  maps these `#[garde(...)]` rules to JSON Schema keywords:
   `length(chars, ..)` → `minLength`/`maxLength` (default byte-mode string
   `length` only maps `min = 1`), `length` on `Vec`/maps → `minItems`/
   `minProperties`…, `range` → `minimum`/`maximum`, `email`/`url`/`ipv4`/
-  `ipv6`/`ip` → `format` (`ip` = `anyOf`), `pattern`/`prefix`/`suffix`/
+  `ipv6`/`ip` → `format` (`ip` = `anyOf`; `format` is annotation-only under
+  OpenAPI 3.1, so schema validators do not enforce it, but garde still does),
+  `pattern`/`prefix`/`suffix`/
   `contains`/`ascii` → `pattern` (+`allOf`), `inner(..)` → `items`. Explicit
   `#[schema(...)]` keywords win. Not documented: `alphanumeric`, `required`,
   `custom`, `matches`, `credit_card`, `phone_number`, `dive`, `if`, consts.

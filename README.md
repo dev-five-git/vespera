@@ -375,8 +375,8 @@ Use one approach per type: runtime `#[schema(...)]` constraints *and*
 `garde::Validate` and fail to compile (`E0119`).
 
 `#[derive(Schema)]` documents every `#[garde(...)]` rule that has a
-deterministic JSON Schema equivalent, so the spec states what the `422`
-enforces (object properties and `Query<T>` / `Path<T>` struct parameters alike):
+deterministic JSON Schema equivalent, so the spec documents these constraints
+(object properties and `Query<T>` / `Path<T>` struct parameters alike):
 
 | `#[garde(...)]` rule | OpenAPI |
 |---|---|
@@ -387,6 +387,9 @@ enforces (object properties and `Query<T>` / `Path<T>` struct parameters alike):
 | `email` / `url` / `ipv4` / `ipv6` / `ip` | `format: email` / `uri` / `ipv4` / `ipv6` / `anyOf` of both |
 | `pattern("...")` / `prefix("x")` / `suffix("x")` / `contains("x")` / `ascii` | `pattern` (literals escaped; extra patterns as `allOf`) |
 | `inner(...)` on `Vec<T>` / `[T; N]` (on `Option<T>`: the value) | the rules on `items` |
+
+`format` values are annotations under OpenAPI 3.1, so a schema validator does
+not enforce them; the `422` still runs the garde check.
 
 Rules on an `Option<T>` field constrain the non-null value. A keyword the
 field's `#[schema(...)]` sets wins over the derived one, and type-implied bounds
