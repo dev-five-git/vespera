@@ -98,10 +98,38 @@ fn active_serde_attrs(attr: &syn::Attribute) -> Vec<syn::Attribute> {
     let Ok((predicate, items)) = attr.parse_args_with(cfg_attr_parts) else {
         return Vec::new();
     };
-    if !statically_active(&predicate) {
+    active_serde_items(&predicate, &items)
+}
+
+/// The `serde(..)` items of `cfg_attr(predicate, items..)` that are statically
+/// active. A nested `cfg_attr(inner, ..)` is flattened under `all(predicate,
+/// inner)`, the same way `field_attrs::filtered_cfg_items` reads it, so the
+/// pick refusal and the carried attributes agree.
+fn active_serde_items(predicate: &Predicate, items: &[syn::Meta]) -> Vec<syn::Attribute> {
+    if !statically_active(predicate) {
         return Vec::new();
     }
-    items.iter().filter_map(serde_item_attr).collect()
+    items
+        .iter()
+        .flat_map(|item| match nested_cfg_attr(item) {
+            Some((inner, nested)) => {
+                let combined: Predicate = syn::parse_quote!(all(#predicate, #inner));
+                active_serde_items(&combined, &nested)
+            }
+            None => serde_item_attr(item).into_iter().collect(),
+        })
+        .collect()
+}
+
+/// The predicate and items of a nested `cfg_attr(..)` item, if `item` is one.
+fn nested_cfg_attr(item: &syn::Meta) -> Option<(Predicate, Vec<syn::Meta>)> {
+    if !item.path().is_ident("cfg_attr") {
+        return None;
+    }
+    item.require_list()
+        .ok()?
+        .parse_args_with(cfg_attr_parts)
+        .ok()
 }
 
 /// `cfg_attr(predicate, items..)` split into the predicate and its items.
@@ -242,6 +270,19 @@ mod tests {
         "#[derive(serde::Serialize)] struct S { #[cfg_attr(all(), cfg(any()))] #[serde(rename = \"old\")] legacy: i32, id: i32 }",
         "old",
         Err(Refusal::Missing { skipped: None })
+    )]
+    // R45-SM1-L1: a `serde(skip)` nested in `cfg_attr(all(), cfg_attr(..))` is
+    // read like the flattened `all(..)` predicate: an active one is skipped,
+    // an inactive one is still serialized.
+    #[case::nested_cfg_attr_active_skip_is_reported(
+        "struct S { #[cfg_attr(all(), cfg_attr(all(), serde(skip)))] secret: i32, id: i32 }",
+        "secret",
+        Err(Refusal::Missing { skipped: Some("secret".to_string()) })
+    )]
+    #[case::nested_cfg_attr_inactive_skip_is_not_reported(
+        "struct S { #[cfg_attr(all(), cfg_attr(any(), serde(skip)))] secret: i32, id: i32 }",
+        "secret",
+        Ok("secret")
     )]
     fn resolves_a_name(
         #[case] source: &str,

@@ -889,6 +889,27 @@ fn reexported_ecosystem_name_keeps_its_default(
     assert_eq!(get_type_default(&ty, &module), expected);
 }
 
+/// R45-SM4-L1: a bare name imported with a leading `::` (`use ::rust_decimal::Decimal;`)
+/// resolves through an empty first segment; the ecosystem default is still
+/// advertised, so the field is not refused as undocumented.
+#[rstest]
+#[case::decimal("use ::rust_decimal::Decimal;", "Decimal", serde_json::json!("0"))]
+#[case::naive_date("use ::chrono::NaiveDate;", "NaiveDate", serde_json::json!("1970-01-01"))]
+fn leading_colon_import_keeps_its_ecosystem_default(
+    #[case] import: &str,
+    #[case] name: &str,
+    #[case] expected: serde_json::Value,
+) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), import).unwrap();
+    let _guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    crate::schema_macro::file_cache::bump_epoch();
+    let ty: syn::Type = syn::parse_str(name).unwrap();
+    assert_eq!(get_type_default(&ty, &module(&["crate"])), Some(expected));
+}
+
 /// R42-SM4-L1: `#[serde(default)]` on `vespera::chrono::DateTime<Utc>` keeps
 /// chrono's epoch default (the root `vespera` was not an ecosystem root, so the
 /// type was refused as "cannot statically determine").

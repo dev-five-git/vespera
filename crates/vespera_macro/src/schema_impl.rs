@@ -780,8 +780,9 @@ fn form_data_default_wins(field: &syn::Field) -> bool {
 
 /// Static checks of a derive input before any metadata is built.
 ///
-/// Without the call-site file no default function can be looked up, so the
-/// default check is skipped (the default is then left undocumented).
+/// Without the call-site file no `default = "fn"` function can be looked up,
+/// so those defaults are skipped (left undocumented); a bare `#[serde(default)]`
+/// is still checked against the type's static default.
 /// Same-named items of this file that derive different serde / Multipart sets
 /// cannot be told apart without a reported position (a span without a line,
 /// R23-SM1): an error beats copying one of their derive sets onto the other.

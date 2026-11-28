@@ -322,6 +322,19 @@ fn test_generate_schema_type_code_with_partial_fields() {
         output.contains("UpdateUser"),
         "should contain generated struct name: {output}"
     );
+    // Only the listed `name` is wrapped; `id` and `email` keep their types.
+    assert!(
+        output.contains("name : Option < String >"),
+        "partial field is optional: {output}"
+    );
+    assert!(
+        output.contains("id : i32") && !output.contains("id : Option"),
+        "unlisted id keeps its type: {output}"
+    );
+    assert!(
+        output.contains("email : String") && !output.contains("email : Option"),
+        "unlisted email keeps its type: {output}"
+    );
 }
 
 // ============================================================
