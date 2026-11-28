@@ -8,6 +8,7 @@ mod request_body;
 mod response;
 mod result_alias;
 pub mod schema;
+mod type_groups;
 pub use extractor_validation::validate_schema_backed_extractors_with_cache;
 pub use extractors::request_extractor;
 #[cfg(feature = "validation")]

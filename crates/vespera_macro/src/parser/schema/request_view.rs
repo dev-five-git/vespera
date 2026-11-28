@@ -86,6 +86,7 @@ use super::{
     struct_schema::{flattened_member, peel},
     wire_override::{container_override_type, documented_tokens},
 };
+use crate::parser::type_groups::strip_type_groups;
 use crate::schema_macro::type_utils::{is_option_type, option_inner};
 
 use super::type_schema::{is_external_crate_path, is_external_crate_root};
@@ -310,7 +311,8 @@ fn container_override_differs(attrs: &[syn::Attribute]) -> bool {
 /// required (serde no longer defaults it to `None` when absent).
 fn field_codec_differs(field: &syn::Field) -> bool {
     codec_differs(field)
-        || (extract_field_codec(&field.attrs).deserialize && is_option_type(&field.ty))
+        || (extract_field_codec(&field.attrs).deserialize
+            && is_option_type(strip_type_groups(&field.ty)))
 }
 
 /// A field's custom serde codec documents a different type per side: no
@@ -702,7 +704,12 @@ fn flatten_differs(
 /// parameters. Positions count every type and const parameter, as the
 /// use-site arguments do (lifetimes are not arguments of the list).
 fn type_param_index(ty: &syn::Type, generics: &syn::Generics) -> Option<usize> {
-    let syn::Type::Path(path) = peel(ty) else {
+    // `Option<T>` reads like `T` (serde reads the flattened value through it).
+    let mut ty = peel(ty);
+    while let Some(inner) = option_inner(ty) {
+        ty = peel(inner);
+    }
+    let syn::Type::Path(path) = ty else {
         return None;
     };
     let ident = path.path.get_ident()?;
@@ -747,8 +754,8 @@ fn field_differs(field: &syn::Field, owner_serializes: bool, flat: &FlatKinds) -
             // `Option::is_none` never `null` on output, while input accepts
             // `null`. A flattened `Option` has no key of its own (see
             // [`flatten_differs`]).
-            || (skip.skip_serializing_if && !is_option_type(&field.ty))
-            || (is_option_type(&field.ty)
+            || (skip.skip_serializing_if && !is_option_type(strip_type_groups(&field.ty)))
+            || (is_option_type(strip_type_groups(&field.ty))
                 && (!skip.skip_serializing_if || skips_none_on_output(&field.attrs))
                 && !extract_flatten(&field.attrs))
             || sided_differs(|side| {
@@ -901,7 +908,7 @@ fn enum_differs(item: &syn::ItemEnum, flat: &FlatKinds) -> bool {
                         tuple_differs(fields, false, flat)
                             || (adjacently_tagged
                                 && fields.unnamed.len() == 1
-                                && is_option_type(&fields.unnamed[0].ty)
+                                && is_option_type(strip_type_groups(&fields.unnamed[0].ty))
                                 && !extract_field_codec(&variant.attrs).deserialize
                                 && !is_skipped_newtype(variant, SerdeSide::Deserialize))
                     }
@@ -949,3 +956,5 @@ pub use input_map::InputMap;
 mod tests;
 #[cfg(test)]
 mod tests_external;
+#[cfg(test)]
+mod tests_groups;

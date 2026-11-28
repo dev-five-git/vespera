@@ -32,7 +32,7 @@ use super::super::{
 mod schema_def;
 use schema_def::{
     SchemaDef, const_argument_exprs, parse_schema_def, ref_override_of, schema_name_of,
-    type_argument_types,
+    substitute_const_type, type_argument_types,
 };
 mod json_paths;
 use json_paths::{is_json_value_path, is_serde_json_map_path};
@@ -698,18 +698,19 @@ fn parse_type_impl(
                         // `Page<User>` is `Page<User, Meta>`), which may name
                         // the parameters before it. A const argument spelled as
                         // a bare identifier (`Buf<u8, LEN>`) is no type argument.
+                        // Const parameters take their argument's expression
+                        // (`Buf<u8, 4>` pins `[T; N]` to 4). A default may name
+                        // one too (`T = [u8; N]`), so it takes the same values.
+                        let const_exprs = const_argument_exprs(parsed.generics_mut(), args);
                         let mut concrete_owned = type_argument_types(parsed.generics_mut(), args);
                         for default in defaults.iter().skip(concrete_owned.len()) {
                             let Some(default) = default else { break };
                             let given: Vec<&Type> = concrete_owned.iter().collect();
                             let filled =
                                 substitute_type(default, &generic_params[..given.len()], &given);
-                            concrete_owned.push(filled);
+                            concrete_owned.push(substitute_const_type(&filled, &const_exprs));
                         }
                         let concrete_types: Vec<&Type> = concrete_owned.iter().collect();
-                        // Const parameters take their argument's expression
-                        // (`Buf<u8, 4>` pins `[T; N]` to 4).
-                        let const_exprs = const_argument_exprs(parsed.generics_mut(), args);
 
                         // Substitute generic parameters with concrete types in
                         // all fields. A definition with neither a type nor a

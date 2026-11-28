@@ -10,6 +10,7 @@ use super::super::{
     serde_attrs::{SerdeSide, entity_candidates},
     wire_override::container_override_type,
 };
+use crate::parser::type_groups::strip_type_groups;
 use crate::schema_macro::type_utils::option_inner;
 
 /// Every type ident named by the item's fields (generic arguments included),
@@ -71,7 +72,7 @@ pub(super) fn collect_idents(ty: &syn::Type, idents: &mut BTreeSet<String>) {
 /// referenced from the parent's request view). Other candidates are not
 /// referenced: `$ref` never names them.
 fn add_relation_targets(ty: &syn::Type, known: &BTreeSet<String>, idents: &mut BTreeSet<String>) {
-    if let syn::Type::Path(type_path) = ty
+    if let syn::Type::Path(type_path) = strip_type_groups(ty)
         && let Some(segment) = type_path.path.segments.last()
         && matches!(
             segment.ident.to_string().as_str(),

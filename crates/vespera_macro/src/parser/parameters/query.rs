@@ -13,11 +13,14 @@ use super::shared::{
     serde_field_name, struct_definition_keyed,
 };
 use crate::{
-    parser::schema::{
-        SerdeSide, apply_field_rules, extract_default, extract_doc_comment, extract_field_codec,
-        extract_flatten, extract_serde_skip_flags, parse_struct_to_schema,
-        parse_type_to_schema_ref, request_view::component_of_input,
-        schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
+    parser::{
+        schema::{
+            SerdeSide, apply_field_rules, extract_default, extract_doc_comment,
+            extract_field_codec, extract_flatten, extract_serde_skip_flags, parse_struct_to_schema,
+            parse_type_to_schema_ref, request_view::component_of_input,
+            schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
+        },
+        type_groups::strip_type_groups,
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type, option_inner},
 };
@@ -232,10 +235,12 @@ fn collect_query_struct_parameters(
         if skip_flags.skip || skip_flags.skip_deserializing {
             continue;
         }
-        let is_optional = is_option_type(&field.ty);
+        // A `$t:ty` fragment or `(T)` field is the same type: look through it.
+        let field_ty = strip_type_groups(&field.ty);
+        let is_optional = is_option_type(field_ty);
 
         if extract_flatten(&field.attrs) {
-            let flattened_ty = option_inner(&field.ty).unwrap_or(&field.ty);
+            let flattened_ty = option_inner(field_ty).unwrap_or(field_ty);
             let first_flattened = parameters.len();
             collect_query_struct_parameters(
                 flattened_ty,

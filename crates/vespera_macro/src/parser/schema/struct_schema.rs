@@ -26,6 +26,7 @@ use super::{
     type_schema::parse_type_to_schema_ref,
     wire_override::{current_container_override, field_schema_ref},
 };
+use crate::parser::type_groups::strip_type_groups;
 use crate::schema_macro::type_utils::{is_option_type, option_inner};
 
 mod flatten;
@@ -537,8 +538,11 @@ pub(super) fn collect_named_fields(
         // A type alias of `Option` (`type Nick = Option<String>`) is not
         // resolved, so its field stays listed as required although serde
         // accepts it missing (a documented limit, not a spec-accuracy promise).
-        let absent_is_none =
-            request && is_option_type(&field.ty) && !extract_field_codec(&field.attrs).deserialize;
+        // A `$t:ty` fragment or `(T)` is the same `Option`, so it is looked
+        // through first.
+        let absent_is_none = request
+            && is_option_type(strip_type_groups(&field.ty))
+            && !extract_field_codec(&field.attrs).deserialize;
 
         // `#[serde(alias = "..")]`: serde's Deserialize also accepts each
         // alias as the key (a second key for the same field is a "duplicate

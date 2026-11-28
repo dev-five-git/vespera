@@ -172,6 +172,13 @@ fn expand(file_src: &str, ret: &str) -> String {
     "-> ApiResult<u8>",
     "-> Result < Json < u8 > , AErr >"
 )]
+// `self::` names the handler module, so a renamed self import is followed to
+// the module's own alias under its original name.
+#[case::renamed_self_import(
+    "type ApiResult<T> = Result<Json<T>, E>; use self::ApiResult as Api;",
+    "-> Api<u8>",
+    "-> Result < Json < u8 > , E >"
+)]
 // Not declared in the named module (a re-export): the unique definition.
 #[case::qualified_reexport(
     "mod v2 { pub use super::inner::*; } mod inner { pub type ApiResult<T> = Result<T, E>; }",

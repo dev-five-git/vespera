@@ -464,3 +464,21 @@ fn invisible_group_negated_range_bound_is_documented() {
     );
     assert_eq!(length_and_minimum(&item), (None, Some(-2.0)));
 }
+
+/// A `$t:ty` fragment (an invisible group) holding `Option<String>` takes its
+/// `inner` rule like the bare type: the rule lands on the value itself.
+#[test]
+fn invisible_group_option_inner_is_documented() {
+    let ty = syn::Type::Group(syn::TypeGroup {
+        attrs: Vec::new(),
+        group_token: syn::token::Group::default(),
+        elem: Box::new(syn::parse_str("Option<String>").unwrap()),
+    });
+    let item: syn::ItemStruct = syn::parse_quote!(
+        struct S {
+            #[garde(inner(length(chars, min = 1)))]
+            value: #ty,
+        }
+    );
+    assert_eq!(length_and_minimum(&item), (Some(1), None));
+}
