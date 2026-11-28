@@ -14,7 +14,9 @@ coverage-report
 .gradle/
 .kotlin/
 build/
+!**/src/build/
 bin/
+!**/src/bin/
 
 # IDE
 .settings/
